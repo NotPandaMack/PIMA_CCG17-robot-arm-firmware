@@ -48,25 +48,9 @@ WebSocket command endpoint:
 ws://ESP8266_IP:81/
 ```
 
-## Raspberry Pi UI
+## Remote Timeline Commands
 
-The Raspberry Pi-hosted Vite/React timeline editor lives in:
-
-```text
-raspberry-pi-ui/
-```
-
-Run it on the Pi:
-
-```bash
-cd raspberry-pi-ui
-npm install
-npm run dev
-```
-
-Open the LAN URL printed by Vite, then set the ESP8266 IP in the Connection panel.
-
-The Timeline Studio tab can now send authored keyframes to firmware with:
+The Raspberry Pi-hosted UI can send authored keyframes to the firmware with:
 
 - `SET_TARGET:<x>:<y>:<z>:<pitch>`
 - `SET_TOOL:<0 or 1>`
