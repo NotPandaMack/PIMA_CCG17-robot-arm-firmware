@@ -31,6 +31,17 @@ void addMoveKeyframe();
 void addGrabKeyframe();
 void addDropKeyframe();
 void addWaitKeyframe();
+bool addRemoteKeyframe(
+  int type,
+  float x,
+  float y,
+  float z,
+  float pitch,
+  ToolMode toolMode,
+  int clawTicks,
+  unsigned long durationMs,
+  unsigned long waitAfterMs
+);
 
 void deleteLastKeyframe();
 void clearTimeline();
