@@ -477,7 +477,8 @@ static void handleCommand(uint8_t clientNum, String msg) {
   }
 
   if (msg == "GET_CAPABILITIES") {
-    webSocket.sendTXT(clientNum, makeCapabilitiesJson());
+    String capabilities = makeCapabilitiesJson();
+    webSocket.sendTXT(clientNum, capabilities);
     return;
   }
 
