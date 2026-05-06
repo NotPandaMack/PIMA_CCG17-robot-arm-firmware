@@ -324,7 +324,52 @@ static void handleOptions() {
 // ======================================================
 // WebSocket Commands
 // ======================================================
-static void handleCommand(String msg) {
+static int parseFieldEnd(const String &msg, int start) {
+  int end = msg.indexOf(':', start);
+  if (end < 0) return msg.length();
+  return end;
+}
+
+static String getCommandField(const String &msg, int fieldIndex) {
+  int start = 0;
+
+  for (int i = 0; i < fieldIndex; i++) {
+    start = msg.indexOf(':', start);
+    if (start < 0) return "";
+    start++;
+  }
+
+  int end = parseFieldEnd(msg, start);
+  return msg.substring(start, end);
+}
+
+static int keyframeTypeFromName(String typeName) {
+  typeName.toUpperCase();
+
+  if (typeName == "GRAB") return KF_GRAB;
+  if (typeName == "DROP") return KF_DROP;
+  if (typeName == "WAIT") return KF_WAIT;
+  return KF_MOVE;
+}
+
+static ToolMode toolModeFromInt(int value) {
+  return value == 1 ? TOOL_GAP_MODE : TOOL_TIP_MODE;
+}
+
+static String makeCapabilitiesJson() {
+  String json = "{";
+  json += "\"type\":\"CAPABILITIES\",";
+  json += "\"setTarget\":true,";
+  json += "\"setTool\":true,";
+  json += "\"setClaw\":true,";
+  json += "\"addKeyframeCompact\":true,";
+  json += "\"playRemoteTimeline\":true,";
+  json += "\"maxKeyframes\":" + String(MAX_KEYFRAMES);
+  json += "}";
+  return json;
+}
+
+static void handleCommand(uint8_t clientNum, String msg) {
   if (msg == "ESTOP") {
     setEstop(true);
     return;
@@ -426,6 +471,58 @@ static void handleCommand(String msg) {
     return;
   }
 
+  if (msg == "PLAY_REMOTE_TIMELINE") {
+    playTimeline();
+    return;
+  }
+
+  if (msg == "GET_CAPABILITIES") {
+    webSocket.sendTXT(clientNum, makeCapabilitiesJson());
+    return;
+  }
+
+  // SET_TARGET:x:y:z:pitch
+  if (msg.startsWith("SET_TARGET:")) {
+    float x = getCommandField(msg, 1).toFloat();
+    float y = getCommandField(msg, 2).toFloat();
+    float z = getCommandField(msg, 3).toFloat();
+    float pitch = getCommandField(msg, 4).toFloat();
+
+    stopTimeline();
+    setTarget(x, y, z, pitch);
+    return;
+  }
+
+  // SET_TOOL:0 for tip, SET_TOOL:1 for gap.
+  if (msg.startsWith("SET_TOOL:")) {
+    setToolMode(toolModeFromInt(getCommandField(msg, 1).toInt()));
+    return;
+  }
+
+  // SET_CLAW:ticks
+  if (msg.startsWith("SET_CLAW:")) {
+    stopTimeline();
+    setClawTicks(getCommandField(msg, 1).toInt());
+    return;
+  }
+
+  // ADD_KEYFRAME:type:x:y:z:pitch:toolMode:clawTicks:durationMs:waitAfterMs
+  // type is MOVE, GRAB, DROP, or WAIT. toolMode is 0 for tip, 1 for gap.
+  if (msg.startsWith("ADD_KEYFRAME:")) {
+    int type = keyframeTypeFromName(getCommandField(msg, 1));
+    float x = getCommandField(msg, 2).toFloat();
+    float y = getCommandField(msg, 3).toFloat();
+    float z = getCommandField(msg, 4).toFloat();
+    float pitch = getCommandField(msg, 5).toFloat();
+    ToolMode toolMode = toolModeFromInt(getCommandField(msg, 6).toInt());
+    int clawTicks = getCommandField(msg, 7).toInt();
+    unsigned long durationMs = (unsigned long)getCommandField(msg, 8).toInt();
+    unsigned long waitAfterMs = (unsigned long)getCommandField(msg, 9).toInt();
+
+    addRemoteKeyframe(type, x, y, z, pitch, toolMode, clawTicks, durationMs, waitAfterMs);
+    return;
+  }
+
   if (msg.startsWith("SPEED:")) {
     int v = msg.substring(6).toInt();
     setSpeed(v);
@@ -469,7 +566,7 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t
   if (type != WStype_TEXT) return;
 
   String msg = String((char*)payload);
-  handleCommand(msg);
+  handleCommand(num, msg);
 }
 
 // ======================================================

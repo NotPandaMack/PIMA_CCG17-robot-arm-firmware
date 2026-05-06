@@ -39,10 +39,20 @@ static void moveToKeyframe(int index) {
   setTarget(kf.x, kf.y, kf.z, kf.pitch);
 }
 
-static void addKeyframe(int type, int clawTicks) {
+static bool appendKeyframe(
+  int type,
+  float x,
+  float y,
+  float z,
+  float pitch,
+  ToolMode toolMode,
+  int clawTicks,
+  unsigned long durationMs,
+  unsigned long waitAfterMs
+) {
   if (keyframeCount >= MAX_KEYFRAMES) {
     Serial.println("Timeline full");
-    return;
+    return false;
   }
 
   Keyframe &kf = timeline[keyframeCount];
@@ -50,21 +60,36 @@ static void addKeyframe(int type, int clawTicks) {
   kf.used = true;
   kf.type = type;
 
-  kf.x = getTargetX();
-  kf.y = getTargetY();
-  kf.z = getTargetZ();
-  kf.pitch = getTargetPitch();
+  kf.x = x;
+  kf.y = y;
+  kf.z = z;
+  kf.pitch = pitch;
 
-  kf.toolMode = getToolMode();
+  kf.toolMode = toolMode;
   kf.clawTicks = clawTicks;
 
-  kf.durationMs = 1200;
-  kf.waitAfterMs = 200;
+  kf.durationMs = durationMs;
+  kf.waitAfterMs = waitAfterMs;
 
   keyframeCount++;
 
   Serial.print("Added keyframe: ");
   Serial.println(keyframeTypeName(type));
+  return true;
+}
+
+static bool addKeyframe(int type, int clawTicks) {
+  return appendKeyframe(
+    type,
+    getTargetX(),
+    getTargetY(),
+    getTargetZ(),
+    getTargetPitch(),
+    getToolMode(),
+    clawTicks,
+    1200,
+    200
+  );
 }
 
 // ======================================================
@@ -90,6 +115,25 @@ void addDropKeyframe() {
 
 void addWaitKeyframe() {
   addKeyframe(KF_WAIT, -1);
+}
+
+bool addRemoteKeyframe(
+  int type,
+  float x,
+  float y,
+  float z,
+  float pitch,
+  ToolMode toolMode,
+  int clawTicks,
+  unsigned long durationMs,
+  unsigned long waitAfterMs
+) {
+  if (type < KF_MOVE || type > KF_WAIT) {
+    Serial.println("Invalid remote keyframe type");
+    return false;
+  }
+
+  return appendKeyframe(type, x, y, z, pitch, toolMode, clawTicks, durationMs, waitAfterMs);
 }
 
 void deleteLastKeyframe() {
@@ -286,7 +330,9 @@ String getTimelineJson() {
     json += "\"z\":" + String(kf.z, 1) + ",";
     json += "\"pitch\":" + String(kf.pitch, 1) + ",";
     json += "\"toolMode\":" + String((int)kf.toolMode) + ",";
-    json += "\"clawTicks\":" + String(kf.clawTicks);
+    json += "\"clawTicks\":" + String(kf.clawTicks) + ",";
+    json += "\"durationMs\":" + String(kf.durationMs) + ",";
+    json += "\"waitAfterMs\":" + String(kf.waitAfterMs);
     json += "}";
 
     if (i < keyframeCount - 1) {

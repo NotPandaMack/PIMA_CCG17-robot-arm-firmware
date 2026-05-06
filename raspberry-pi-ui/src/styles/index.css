@@ -1,0 +1,329 @@
+@import 'tailwindcss';
+
+:root {
+  color: #d9e4ee;
+  background: #070a0e;
+  font-family: "Aptos", "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background:
+    linear-gradient(115deg, rgba(15, 23, 42, 0.45), rgba(5, 150, 105, 0.08) 45%, rgba(185, 28, 28, 0.08)),
+    radial-gradient(circle at 20% 0%, rgba(14, 165, 233, 0.15), transparent 34rem),
+    repeating-linear-gradient(90deg, rgba(148, 163, 184, 0.04) 0 1px, transparent 1px 48px),
+    #070a0e;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.app-header {
+  @apply flex flex-col gap-3 rounded-lg border border-slate-700/70 bg-slate-950/55 p-4 shadow-2xl shadow-black/30 backdrop-blur-xl md:flex-row md:items-end md:justify-between;
+}
+
+.app-header h1 {
+  @apply m-0 text-3xl font-black tracking-normal text-slate-50 md:text-4xl;
+}
+
+.eyebrow {
+  @apply mb-1 text-xs font-bold uppercase tracking-[0.22em] text-cyan-300;
+}
+
+.panel {
+  @apply rounded-lg border border-slate-700/70 bg-slate-950/65 p-4 shadow-2xl shadow-black/25 backdrop-blur-xl;
+}
+
+.panel-title {
+  @apply mb-4 flex items-center gap-2 text-sm font-black uppercase tracking-[0.18em] text-slate-200;
+}
+
+.field-label {
+  @apply grid gap-1 text-xs font-bold uppercase tracking-[0.14em] text-slate-400;
+}
+
+.text-input {
+  @apply w-full rounded-md border border-slate-700 bg-slate-950/80 px-3 py-3 text-base text-slate-100 outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/20;
+}
+
+.control-button,
+.primary-button,
+.danger-button,
+.danger-soft-button,
+.hold-button {
+  @apply inline-flex min-h-11 touch-none select-none items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-black uppercase tracking-normal transition active:scale-[0.98];
+}
+
+.control-button {
+  @apply border-slate-700 bg-slate-900/85 text-slate-100 hover:border-cyan-400/60 hover:bg-slate-800;
+}
+
+.primary-button {
+  @apply border-cyan-300/50 bg-cyan-400/15 text-cyan-100 hover:bg-cyan-400/25;
+}
+
+.danger-button {
+  @apply border-red-400/70 bg-red-600 text-white shadow-lg shadow-red-950/40 hover:bg-red-500;
+}
+
+.danger-soft-button {
+  @apply border-red-500/45 bg-red-500/12 text-red-100 hover:bg-red-500/22;
+}
+
+.hold-button {
+  @apply min-h-16 border-slate-700 bg-slate-900/90 text-slate-100 hover:border-cyan-300/70 hover:bg-cyan-950/60 active:border-cyan-200 active:bg-cyan-700/35;
+}
+
+.hold-button span {
+  @apply truncate;
+}
+
+.status-pill {
+  @apply inline-flex min-h-9 items-center gap-2 rounded-full border border-slate-700 bg-slate-900/85 px-3 text-xs font-black uppercase tracking-[0.14em] text-slate-200;
+}
+
+.readout {
+  @apply min-w-0 rounded-md border border-slate-800 bg-slate-950/70 p-3;
+}
+
+.readout span {
+  @apply block truncate text-xs font-bold uppercase tracking-[0.14em] text-slate-500;
+}
+
+.readout strong {
+  @apply mt-1 block truncate text-lg font-black text-slate-100;
+}
+
+.readout small {
+  @apply ml-1 text-xs text-slate-500;
+}
+
+.speed-card {
+  @apply grid gap-3 rounded-md border border-slate-700 bg-slate-900/80 p-3;
+}
+
+.speed-card input {
+  accent-color: #22d3ee;
+}
+
+.control-group {
+  @apply rounded-lg border border-slate-800 bg-black/20 p-3;
+}
+
+.control-group h3 {
+  @apply mb-3 text-xs font-black uppercase tracking-[0.16em] text-slate-400;
+}
+
+.joystick {
+  @apply grid min-h-36 place-items-center rounded-md border border-dashed border-slate-700 bg-slate-950/70 text-center text-xs font-bold uppercase tracking-[0.14em] text-slate-500;
+}
+
+.joystick div {
+  @apply h-16 w-16 rounded-full border border-cyan-300/50 bg-cyan-400/10 shadow-[inset_0_0_24px_rgba(34,211,238,0.18)];
+}
+
+.xy-plot {
+  @apply relative min-h-48 overflow-hidden rounded-md border border-slate-800 bg-slate-950;
+}
+
+.plot-grid {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(rgba(148, 163, 184, 0.09) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.09) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.plot-dot {
+  @apply absolute h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-cyan-100 bg-cyan-300 shadow-lg shadow-cyan-400/40;
+}
+
+.xy-plot span {
+  @apply absolute bottom-3 left-3 text-xs font-black uppercase tracking-[0.16em] text-slate-500;
+}
+
+.gauge {
+  @apply grid grid-rows-[1fr_auto_auto] justify-items-center gap-2 rounded-md border border-slate-800 bg-slate-950 p-2 text-xs font-black uppercase tracking-[0.12em] text-slate-400;
+}
+
+.gauge-track {
+  @apply flex h-full min-h-36 w-5 items-end overflow-hidden rounded-full bg-slate-800;
+}
+
+.gauge-track div {
+  @apply w-full rounded-full bg-gradient-to-t from-emerald-400 to-cyan-300;
+}
+
+.timeline-shell {
+  @apply overflow-x-auto rounded-lg border border-slate-800 bg-black/30 p-3;
+}
+
+.timeline-ruler {
+  @apply mb-2 grid min-w-[760px] auto-cols-[minmax(150px,1fr)] grid-flow-col gap-3 text-xs font-bold text-slate-500;
+}
+
+.timeline-track {
+  @apply relative flex min-h-44 min-w-[760px] items-stretch gap-3 rounded-md border border-slate-800 bg-slate-950/90 p-4;
+}
+
+.playhead {
+  @apply pointer-events-none absolute bottom-2 top-2 z-10 w-0.5 bg-cyan-200 shadow-lg shadow-cyan-300/50 transition-all duration-500;
+}
+
+.keyframe-card {
+  @apply relative z-20 grid min-w-36 flex-1 content-between gap-2 rounded-md border p-3 text-left transition hover:-translate-y-0.5;
+}
+
+.keyframe-card div {
+  @apply flex items-center gap-2;
+}
+
+.keyframe-card strong {
+  @apply truncate text-sm text-slate-50;
+}
+
+.keyframe-card span,
+.keyframe-card small {
+  @apply truncate text-xs font-bold text-slate-300/80;
+}
+
+.keyframe-card.selected {
+  @apply ring-2 ring-cyan-200;
+}
+
+.type-move {
+  @apply border-cyan-400/45 bg-cyan-500/14;
+}
+
+.type-grab {
+  @apply border-emerald-400/45 bg-emerald-500/14;
+}
+
+.type-drop {
+  @apply border-amber-300/50 bg-amber-400/14;
+}
+
+.type-wait {
+  @apply border-slate-400/45 bg-slate-500/14;
+}
+
+.firmware-note {
+  @apply mt-4 flex gap-2 rounded-md border border-amber-400/30 bg-amber-500/10 p-3 text-sm text-amber-100;
+}
+
+.esp-timeline-grid {
+  @apply grid gap-2 md:grid-cols-2 xl:grid-cols-4;
+}
+
+.esp-kf {
+  @apply grid gap-1 rounded-md border p-3 text-sm;
+}
+
+.esp-kf strong {
+  @apply text-slate-100;
+}
+
+.esp-kf span {
+  @apply text-xs font-semibold text-slate-400;
+}
+
+.empty-state {
+  @apply rounded-md border border-dashed border-slate-700 bg-slate-950/50 p-4 text-sm font-semibold text-slate-500;
+}
+
+.program-row {
+  @apply flex items-center gap-2 rounded-md border border-slate-800 bg-slate-950/70 p-2;
+}
+
+.program-row > button:first-child {
+  @apply grid min-w-0 flex-1 text-left;
+}
+
+.program-row strong {
+  @apply truncate text-sm text-slate-100;
+}
+
+.program-row span {
+  @apply truncate text-xs text-slate-500;
+}
+
+.icon-button {
+  @apply inline-grid h-10 w-10 place-items-center rounded-md border border-slate-700 bg-slate-900 text-slate-200 hover:border-red-400 hover:text-red-200;
+}
+
+.toast {
+  @apply max-w-full rounded-md border border-cyan-300/30 bg-cyan-300/10 px-3 py-2 text-sm font-bold text-cyan-100;
+}
+
+.tab-bar {
+  @apply flex gap-2 rounded-lg border border-slate-800 bg-black/30 p-2;
+}
+
+.tab-button {
+  @apply min-h-12 flex-1 rounded-md border border-transparent px-4 text-sm font-black uppercase tracking-[0.16em] text-slate-400 transition hover:bg-slate-900 hover:text-slate-100;
+}
+
+.tab-button.active {
+  @apply border-cyan-300/40 bg-cyan-300/12 text-cyan-100 shadow-lg shadow-cyan-950/20;
+}
+
+.timeline-studio {
+  @apply grid gap-4 xl:grid-cols-[minmax(0,1fr)_400px];
+}
+
+.editor-main {
+  @apply overflow-hidden rounded-lg border border-slate-700/70 bg-slate-950/75 p-4 shadow-2xl shadow-black/35 backdrop-blur-xl;
+}
+
+.editor-side {
+  @apply grid content-start gap-4;
+}
+
+.editor-toolbar {
+  @apply mb-4 grid grid-cols-2 gap-2 rounded-lg border border-slate-800 bg-black/25 p-3 md:grid-cols-4 xl:grid-cols-8;
+}
+
+.editor-meter-row {
+  @apply mb-3 grid gap-2 md:grid-cols-3;
+}
+
+.log-line {
+  @apply rounded-md border border-red-500/20 bg-red-500/10 p-2 text-sm text-red-100;
+}
+
+@media (max-width: 700px) {
+  .control-button,
+  .primary-button,
+  .danger-button,
+  .danger-soft-button {
+    @apply text-xs;
+  }
+
+  .app-header h1 {
+    @apply text-2xl;
+  }
+}
