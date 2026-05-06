@@ -1,0 +1,20 @@
+#include "Config.h"
+#include "RobotArm.h"
+#include "Timeline.h"
+#include "WebServerControl.h"
+
+void setup() {
+  Serial.begin(115200);
+
+  setupRobotArm();
+  setupTimeline();
+  setupWebServerControl();
+
+  Serial.println("Robot Arm Ready");
+}
+
+void loop() {
+  updateWebServerControl();
+  updateTimeline();
+  updateRobotArm();
+}
