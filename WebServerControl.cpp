@@ -11,6 +11,9 @@
 static ESP8266WebServer server(80);
 static WebSocketsServer webSocket = WebSocketsServer(81);
 
+static String lastCommandText = "none";
+static unsigned long commandCount = 0;
+
 // ======================================================
 // Status JSON
 // ======================================================
@@ -35,6 +38,9 @@ static String makeStatusJson() {
 
   json += "\"clawTicks\":" + String(getClawTicks()) + ",";
   json += "\"speed\":" + String(getSpeed()) + ",";
+
+  json += "\"lastCommand\":\"" + lastCommandText + "\",";
+  json += "\"commandCount\":" + String(commandCount) + ",";
 
   json += "\"keyframeCount\":" + String(getKeyframeCount()) + ",";
   json += "\"timelinePlaying\":" + String(getTimelinePlaying() ? "true" : "false") + ",";
@@ -321,6 +327,26 @@ static void handleOptions() {
   server.send(204);
 }
 
+static void handleCommand(uint8_t clientNum, String msg);
+
+static void handleHttpCommand() {
+  addCors();
+
+  String command = server.arg("cmd");
+  if (command.length() == 0) {
+    command = server.arg("plain");
+  }
+
+  command.trim();
+  if (command.length() == 0) {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"missing cmd\"}");
+    return;
+  }
+
+  handleCommand(255, command);
+  server.send(200, "application/json", "{\"ok\":true,\"command\":\"" + command + "\"}");
+}
+
 // ======================================================
 // WebSocket Commands
 // ======================================================
@@ -370,6 +396,17 @@ static String makeCapabilitiesJson() {
 }
 
 static void handleCommand(uint8_t clientNum, String msg) {
+  msg.trim();
+  if (msg.length() == 0) return;
+
+  lastCommandText = msg;
+  commandCount++;
+
+  Serial.print("Command ");
+  Serial.print(commandCount);
+  Serial.print(": ");
+  Serial.println(msg);
+
   if (msg == "ESTOP") {
     setEstop(true);
     return;
@@ -477,8 +514,10 @@ static void handleCommand(uint8_t clientNum, String msg) {
   }
 
   if (msg == "GET_CAPABILITIES") {
-    String capabilities = makeCapabilitiesJson();
-    webSocket.sendTXT(clientNum, capabilities);
+    if (clientNum != 255) {
+      String capabilities = makeCapabilitiesJson();
+      webSocket.sendTXT(clientNum, capabilities);
+    }
     return;
   }
 
@@ -595,9 +634,12 @@ void setupWebServerControl() {
 
   server.on("/", HTTP_GET, handleRoot);
   server.on("/status", HTTP_GET, handleStatus);
+  server.on("/command", HTTP_GET, handleHttpCommand);
+  server.on("/command", HTTP_POST, handleHttpCommand);
 
   server.on("/", HTTP_OPTIONS, handleOptions);
   server.on("/status", HTTP_OPTIONS, handleOptions);
+  server.on("/command", HTTP_OPTIONS, handleOptions);
 
   server.begin();
 
