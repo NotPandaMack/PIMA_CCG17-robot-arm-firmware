@@ -566,7 +566,13 @@ static void handleCommand(uint8_t clientNum, String msg) {
 static void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
   if (type != WStype_TEXT) return;
 
-  String msg = String((char*)payload);
+  String msg;
+  msg.reserve(length);
+  for (size_t i = 0; i < length; i++) {
+    msg += (char)payload[i];
+  }
+  msg.trim();
+
   handleCommand(num, msg);
 }
 

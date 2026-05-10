@@ -32,11 +32,11 @@ static const int SERVO_MAX = 420;
 #define NUM_SERVOS 5
 
 static const int SERVO_CHANNELS[NUM_SERVOS] = {
-  8,   // Base
-  7,   // Bicep / Shoulder
-  4,   // Forearm / Elbow
-  9,   // Wrist up/down
-  15   // Claw open/close
+  0,   // Base
+  1,   // Bicep / Shoulder
+  2,   // Forearm / Elbow
+  3,   // Wrist up/down
+  4    // Claw open/close
 };
 
 // ======================================================
