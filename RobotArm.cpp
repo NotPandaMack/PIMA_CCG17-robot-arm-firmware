@@ -33,19 +33,20 @@ static bool ELBOW_UP_SOLUTION = false;
 // Servo State
 // ======================================================
 struct ServoState {
-  int current;
-  int target;
+  float current;
+  float target;
+  float velocity;
   bool enabled;
   int minSafe;
   int maxSafe;
 };
 
 static ServoState servos[NUM_SERVOS] = {
-  { SERVO_MID, SERVO_MID, false, 195, 420 }, // Base
-  { SERVO_MID, SERVO_MID, false, 195, 420 }, // Bicep
-  { SERVO_MID, SERVO_MID, false, 195, 420 }, // Forearm
-  { SERVO_MID, SERVO_MID, false, 195, 420 }, // Wrist
-  { SERVO_MID, SERVO_MID, false, 220, 390 }  // Claw
+  { SERVO_MID, SERVO_MID, 0.0, false, 195, 420 }, // Base
+  { SERVO_MID, SERVO_MID, 0.0, false, 195, 420 }, // Bicep
+  { SERVO_MID, SERVO_MID, 0.0, false, 195, 420 }, // Forearm
+  { SERVO_MID, SERVO_MID, 0.0, false, 195, 420 }, // Wrist
+  { SERVO_MID, SERVO_MID, 0.0, false, 220, 390 }  // Claw
 };
 
 static int lastWritten[NUM_SERVOS] = { -1, -1, -1, -1, -1 };
@@ -54,7 +55,7 @@ static bool estop = false;
 
 static unsigned long lastUpdate = 0;
 
-static int servoStepSize = 1;
+static int speedSetting = 1;
 static float ikStepScale = 1.0;
 
 static int activeServo = -1;
@@ -64,6 +65,11 @@ static float activeDx = 0.0;
 static float activeDy = 0.0;
 static float activeDz = 0.0;
 static float activeDp = 0.0;
+
+static float desiredDx = 0.0;
+static float desiredDy = 0.0;
+static float desiredDz = 0.0;
+static float desiredDp = 0.0;
 
 static unsigned long lastCommandTime = 0;
 
@@ -98,6 +104,18 @@ static float clampFloat(float v, float lo, float hi) {
   return v;
 }
 
+static float absFloat(float v) {
+  return v < 0.0 ? -v : v;
+}
+
+static int roundedTicks(float ticks) {
+  return (int)(ticks + 0.5f);
+}
+
+static float speedScale() {
+  return 0.55 + ((float)speedSetting - 1.0) * 0.15;
+}
+
 static float radToDeg(float r) {
   return r * 180.0 / PI;
 }
@@ -118,18 +136,21 @@ static void disableServo(int i) {
 
   pwm.setPWM(SERVO_CHANNELS[i], 0, 4096);
   servos[i].enabled = false;
+  servos[i].velocity = 0.0;
   lastWritten[i] = -1;
 }
 
 static void enableServo(int i) {
   if (i < 0 || i >= NUM_SERVOS) return;
 
-  servos[i].target = constrain(servos[i].target, servos[i].minSafe, servos[i].maxSafe);
+  servos[i].target = clampFloat(servos[i].target, servos[i].minSafe, servos[i].maxSafe);
   servos[i].current = servos[i].target;
+  servos[i].velocity = 0.0;
   servos[i].enabled = true;
 
-  pwm.setPWM(SERVO_CHANNELS[i], 0, servos[i].current);
-  lastWritten[i] = servos[i].current;
+  int ticks = roundedTicks(servos[i].current);
+  pwm.setPWM(SERVO_CHANNELS[i], 0, ticks);
+  lastWritten[i] = ticks;
 }
 
 static void ensureServoEnabled(int i) {
@@ -140,7 +161,7 @@ static void ensureServoEnabled(int i) {
   }
 }
 
-static int angleToTicks(float angleDeg, bool invert, float offsetDeg) {
+static float angleToTicks(float angleDeg, bool invert, float offsetDeg) {
   angleDeg += offsetDeg;
   angleDeg = constrain(angleDeg, 0, 180);
 
@@ -148,14 +169,14 @@ static int angleToTicks(float angleDeg, bool invert, float offsetDeg) {
     angleDeg = 180.0 - angleDeg;
   }
 
-  int ticks = map((int)angleDeg, 0, 180, SERVO_MIN, SERVO_MAX);
-  return constrain(ticks, SERVO_MIN, SERVO_MAX);
+  float ticks = SERVO_MIN + ((SERVO_MAX - SERVO_MIN) * (angleDeg / 180.0));
+  return clampFloat(ticks, SERVO_MIN, SERVO_MAX);
 }
 
 static void setServoTargetFromAngle(int servoIndex, float angleDeg, bool invert, float offsetDeg) {
-  int ticks = angleToTicks(angleDeg, invert, offsetDeg);
+  float ticks = angleToTicks(angleDeg, invert, offsetDeg);
 
-  servos[servoIndex].target = constrain(
+  servos[servoIndex].target = clampFloat(
     ticks,
     servos[servoIndex].minSafe,
     servos[servoIndex].maxSafe
@@ -206,13 +227,30 @@ void updateRobotArm() {
   }
 
   if (activeServo >= 0 && activeDirection != 0) {
-    servos[activeServo].target += activeDirection * servoStepSize;
-    servos[activeServo].target = constrain(
+    servos[activeServo].target += activeDirection * MANUAL_TARGET_TICKS_PER_UPDATE * speedScale();
+    servos[activeServo].target = clampFloat(
       servos[activeServo].target,
       servos[activeServo].minSafe,
       servos[activeServo].maxSafe
     );
   }
+
+  float smoothing = (
+    desiredDx == 0.0 &&
+    desiredDy == 0.0 &&
+    desiredDz == 0.0 &&
+    desiredDp == 0.0
+  ) ? IK_STOP_SMOOTHING : IK_INPUT_SMOOTHING;
+
+  activeDx += (desiredDx - activeDx) * smoothing;
+  activeDy += (desiredDy - activeDy) * smoothing;
+  activeDz += (desiredDz - activeDz) * smoothing;
+  activeDp += (desiredDp - activeDp) * smoothing;
+
+  if (absFloat(activeDx) < 0.01) activeDx = 0.0;
+  if (absFloat(activeDy) < 0.01) activeDy = 0.0;
+  if (absFloat(activeDz) < 0.01) activeDz = 0.0;
+  if (absFloat(activeDp) < 0.01) activeDp = 0.0;
 
   if (activeDx != 0.0 || activeDy != 0.0 || activeDz != 0.0 || activeDp != 0.0) {
     moveTargetRelative(
@@ -226,23 +264,39 @@ void updateRobotArm() {
   for (int i = 0; i < NUM_SERVOS; i++) {
     if (!servos[i].enabled) continue;
 
-    if (servos[i].current < servos[i].target) {
-      servos[i].current += servoStepSize;
-      if (servos[i].current > servos[i].target) {
+    float error = servos[i].target - servos[i].current;
+
+    if (absFloat(error) <= SERVO_SETTLE_DEADBAND_TICKS && absFloat(servos[i].velocity) <= SERVO_ACCEL_TICKS[i]) {
+      servos[i].current = servos[i].target;
+      servos[i].velocity = 0.0;
+    } else {
+      float desiredVelocity = clampFloat(
+        error,
+        -SERVO_MAX_SPEED_TICKS[i] * speedScale(),
+        SERVO_MAX_SPEED_TICKS[i] * speedScale()
+      );
+
+      float velocityDelta = desiredVelocity - servos[i].velocity;
+      float maxAccel = SERVO_ACCEL_TICKS[i] * speedScale();
+      velocityDelta = clampFloat(velocityDelta, -maxAccel, maxAccel);
+
+      servos[i].velocity += velocityDelta;
+      servos[i].current += servos[i].velocity;
+
+      if ((error > 0.0 && servos[i].current > servos[i].target) ||
+          (error < 0.0 && servos[i].current < servos[i].target)) {
         servos[i].current = servos[i].target;
+        servos[i].velocity = 0.0;
       }
     }
 
-    if (servos[i].current > servos[i].target) {
-      servos[i].current -= servoStepSize;
-      if (servos[i].current < servos[i].target) {
-        servos[i].current = servos[i].target;
-      }
-    }
+    servos[i].current = clampFloat(servos[i].current, servos[i].minSafe, servos[i].maxSafe);
 
-    if (lastWritten[i] != servos[i].current) {
-      pwm.setPWM(SERVO_CHANNELS[i], 0, servos[i].current);
-      lastWritten[i] = servos[i].current;
+    int writeTicks = roundedTicks(servos[i].current);
+
+    if (lastWritten[i] != writeTicks) {
+      pwm.setPWM(SERVO_CHANNELS[i], 0, writeTicks);
+      lastWritten[i] = writeTicks;
     }
   }
 }
@@ -254,6 +308,10 @@ void stopRobotMotion() {
   activeServo = -1;
   activeDirection = 0;
 
+  desiredDx = 0.0;
+  desiredDy = 0.0;
+  desiredDz = 0.0;
+  desiredDp = 0.0;
   activeDx = 0.0;
   activeDy = 0.0;
   activeDz = 0.0;
@@ -304,7 +362,7 @@ ToolMode getToolMode() {
 void setClawTicks(int ticks) {
   if (estop) return;
 
-  servos[CLAW].target = constrain(ticks, servos[CLAW].minSafe, servos[CLAW].maxSafe);
+  servos[CLAW].target = clampFloat(ticks, servos[CLAW].minSafe, servos[CLAW].maxSafe);
   ensureServoEnabled(CLAW);
 }
 
@@ -508,7 +566,7 @@ bool robotAtTarget(int toleranceTicks) {
   for (int i = 0; i < NUM_SERVOS; i++) {
     if (!servos[i].enabled) continue;
 
-    if (abs(servos[i].current - servos[i].target) > toleranceTicks) {
+    if (absFloat(servos[i].current - servos[i].target) > toleranceTicks) {
       return false;
     }
   }
@@ -520,13 +578,13 @@ bool robotAtTarget(int toleranceTicks) {
 // Continuous Movement
 // ======================================================
 void setSpeed(int speed) {
-  servoStepSize = constrain(speed, 1, 6);
-  ikStepScale = 0.65 + (servoStepSize * 0.35);
+  speedSetting = constrain(speed, 1, 6);
+  ikStepScale = 0.45 + (speedSetting * 0.18);
   robotStatus = "Speed set";
 }
 
 int getSpeed() {
-  return servoStepSize;
+  return speedSetting;
 }
 
 void setContinuousManualMove(int servo, int dir) {
@@ -538,6 +596,10 @@ void setContinuousManualMove(int servo, int dir) {
   activeServo = servo;
   activeDirection = dir;
 
+  desiredDx = 0.0;
+  desiredDy = 0.0;
+  desiredDz = 0.0;
+  desiredDp = 0.0;
   activeDx = 0.0;
   activeDy = 0.0;
   activeDz = 0.0;
@@ -557,10 +619,10 @@ void setContinuousIKMove(float dx, float dy, float dz, float dp) {
   activeServo = -1;
   activeDirection = 0;
 
-  activeDx = dx;
-  activeDy = dy;
-  activeDz = dz;
-  activeDp = dp;
+  desiredDx = dx;
+  desiredDy = dy;
+  desiredDz = dz;
+  desiredDp = dp;
 
   lastCommandTime = millis();
 
@@ -576,6 +638,10 @@ void setEstop(bool enabled) {
   if (estop) {
     allServosOff();
     stopRobotMotion();
+    activeDx = 0.0;
+    activeDy = 0.0;
+    activeDz = 0.0;
+    activeDp = 0.0;
     stopTimeline();
     robotStatus = "ESTOP ACTIVE";
   } else {
@@ -606,7 +672,7 @@ float getLastShoulderDeg() { return lastShoulderDeg; }
 float getLastElbowDeg() { return lastElbowServoDeg; }
 float getLastWristDeg() { return lastWristDeg; }
 
-int getClawTicks() { return servos[CLAW].target; }
+int getClawTicks() { return roundedTicks(servos[CLAW].target); }
 
 String getToolModeName() {
   return activeToolMode == TOOL_GAP_MODE ? "Deep gap grip" : "Tip grip";

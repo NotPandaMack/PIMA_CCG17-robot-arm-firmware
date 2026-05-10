@@ -91,6 +91,31 @@ static const int UPDATE_MS = 20;
 static const int COMMAND_TIMEOUT_MS = 450;
 
 // ======================================================
+// Motion Smoothing
+// ======================================================
+// Per 20 ms update. Higher values move faster; lower values reduce jerk.
+static const float SERVO_MAX_SPEED_TICKS[NUM_SERVOS] = {
+  2.2,  // Base
+  1.6,  // Bicep / Shoulder
+  1.6,  // Forearm / Elbow
+  1.9,  // Wrist up/down
+  3.2   // Claw open/close
+};
+
+static const float SERVO_ACCEL_TICKS[NUM_SERVOS] = {
+  0.22, // Base
+  0.16, // Bicep / Shoulder
+  0.16, // Forearm / Elbow
+  0.20, // Wrist up/down
+  0.45  // Claw open/close
+};
+
+static const float SERVO_SETTLE_DEADBAND_TICKS = 0.35;
+static const float MANUAL_TARGET_TICKS_PER_UPDATE = 1.5;
+static const float IK_INPUT_SMOOTHING = 0.22;
+static const float IK_STOP_SMOOTHING = 0.38;
+
+// ======================================================
 // Timeline
 // ======================================================
 #define MAX_KEYFRAMES 12
