@@ -565,7 +565,7 @@ bool calculateIK() {
   float elbowInternalDeg = radToDeg(elbowInternalRad);
   float forearmAbsDeg = radToDeg(forearmAbsRad);
 
-  float bicepServoDeg = 180.0 - shoulderDeg;
+  float bicepServoDeg = shoulderDeg;
   float forearmServoDeg = forearmAbsDeg + 90.0;
   float wristServoDeg = toolPitchDeg - forearmAbsDeg + 90.0;
 
