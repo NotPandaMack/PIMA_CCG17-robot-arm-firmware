@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import threading
 from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any
@@ -9,8 +11,11 @@ import requests
 from .config import DEFAULT_WORKSPACE
 
 
+logger = logging.getLogger(__name__)
+
+
 class PiClient:
-    def __init__(self, base_url: str, timeout_sec: float = 2.5, mock: bool = False) -> None:
+    def __init__(self, base_url: str, timeout_sec: float = 0.3, mock: bool = False) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_sec = timeout_sec
         self.mock = mock
@@ -44,23 +49,23 @@ class PiClient:
     def health(self) -> dict[str, Any]:
         if self.mock:
             return {"ok": True, "mock": True}
-        return self._request("GET", "/health")
+        return self._request("GET", "/health", timeout=0.3)
 
     def get_config(self) -> dict[str, Any]:
         if self.mock:
             return {"ok": True, "config": deepcopy(self._mock_config)}
-        return self._request("GET", "/vision/config")
+        return self._request("GET", "/vision/config", timeout=1.0)
 
     def put_config(self, config_patch: dict[str, Any]) -> dict[str, Any]:
         if self.mock:
             _deep_update(self._mock_config, config_patch)
             return {"ok": True, "config": deepcopy(self._mock_config)}
-        return self._request("PUT", "/vision/config", json=config_patch)
+        return self._request("PUT", "/vision/config", json=config_patch, timeout=1.0)
 
     def get_target(self) -> dict[str, Any]:
         if self.mock:
             return {"hasTarget": self._mock_target is not None, "target": deepcopy(self._mock_target)}
-        return self._request("GET", "/vision/target")
+        return self._request("GET", "/vision/target", timeout=0.3)
 
     def post_target(self, payload: dict[str, Any]) -> dict[str, Any]:
         if self.mock:
@@ -68,47 +73,49 @@ class PiClient:
             target["receivedAt"] = datetime.now(UTC).isoformat().replace("+00:00", "Z")
             self._mock_target = target
             return {"ok": True, "target": deepcopy(target)}
-        return self._request("POST", "/vision/target", json=payload)
+        return self._request("POST", "/vision/target", json=payload, timeout=0.3)
 
     def clear_target(self) -> dict[str, Any]:
         if self.mock:
             self._mock_target = None
             return {"ok": True, "hasTarget": False}
-        return self._request("POST", "/vision/clear", json={})
+        return self._request("POST", "/vision/clear", json={}, timeout=0.3)
 
     def get_calibration(self) -> dict[str, Any]:
         if self.mock:
             return deepcopy(self._mock_calibration)
-        return self._request("GET", "/vision/calibration")
+        return self._request("GET", "/vision/calibration", timeout=1.0)
 
     def put_calibration(self, calibration: dict[str, Any]) -> dict[str, Any]:
         if self.mock:
             self._mock_calibration = deepcopy(calibration)
             return {"ok": True, "calibration": deepcopy(calibration)}
-        return self._request("PUT", "/vision/calibration", json=calibration)
+        return self._request("PUT", "/vision/calibration", json=calibration, timeout=1.0)
 
     def preview_pick(self, hover_only: bool = False) -> dict[str, Any]:
         if self.mock:
             return self._mock_plan(hover_only)
         suffix = "?hoverOnly=true" if hover_only else ""
-        return self._request("POST", f"/vision/pick/preview{suffix}", json={})
+        return self._request("POST", f"/vision/pick/preview{suffix}", json={}, timeout=1.0)
 
     def pick(self, hover_only: bool = False) -> dict[str, Any]:
         if self.mock:
             plan = self._mock_plan(hover_only)
             return {**plan, "sent": plan["ok"] and plan["motionEnabled"]}
         suffix = "?hoverOnly=true" if hover_only else ""
-        return self._request("POST", f"/vision/pick{suffix}", json={})
+        return self._request("POST", f"/vision/pick{suffix}", json={}, timeout=1.0)
 
     def esp_status(self) -> dict[str, Any]:
         if self.mock:
             return {"status": "mock", "x": 0.0, "y": 170.0, "z": 80.0, "pitch": -8.0, "estop": False}
-        return self._request("GET", "/vision/esp/status")
+        return self._request("GET", "/vision/esp/status", timeout=0.3)
 
     def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+        _warn_if_main_thread(f"{method} {path}")
         if not self.base_url:
             raise RuntimeError("Pi server URL is not configured")
-        response = requests.request(method, f"{self.base_url}{path}", timeout=self.timeout_sec, **kwargs)
+        timeout = kwargs.pop("timeout", self.timeout_sec)
+        response = requests.request(method, f"{self.base_url}{path}", timeout=timeout, **kwargs)
         response.raise_for_status()
         if not response.content:
             return {}
@@ -183,3 +190,8 @@ def _deep_update(target: dict[str, Any], source: dict[str, Any]) -> None:
             _deep_update(target[key], value)
         else:
             target[key] = value
+
+
+def _warn_if_main_thread(operation: str) -> None:
+    if threading.current_thread() is threading.main_thread():
+        logger.warning("Network call made from main thread: %s", operation)

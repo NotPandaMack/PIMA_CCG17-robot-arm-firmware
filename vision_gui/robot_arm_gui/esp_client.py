@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import logging
+import threading
 from typing import Any
 from urllib.parse import quote
 
 import requests
 
 
+logger = logging.getLogger(__name__)
+
+
 class EspClient:
-    def __init__(self, base_url: str, timeout_sec: float = 1.8, fake: bool = False) -> None:
+    def __init__(self, base_url: str, timeout_sec: float = 0.3, fake: bool = False) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_sec = timeout_sec
         self.fake = fake
@@ -37,6 +42,7 @@ class EspClient:
             return dict(self.fake_status)
         if not self.base_url:
             raise RuntimeError("ESP URL is not configured")
+        _warn_if_main_thread("GET /status")
         response = requests.get(f"{self.base_url}/status", timeout=self.timeout_sec)
         response.raise_for_status()
         data = response.json()
@@ -66,7 +72,8 @@ class EspClient:
             return {"ok": True, "command": command, "fake": True}
         if not self.base_url:
             raise RuntimeError("ESP URL is not configured")
-        response = requests.get(f"{self.base_url}/command?cmd={quote(command)}", timeout=self.timeout_sec)
+        _warn_if_main_thread(f"command {command}")
+        response = requests.get(f"{self.base_url}/command?cmd={quote(command)}", timeout=1.0)
         response.raise_for_status()
         data = response.json()
         return data if isinstance(data, dict) else {"ok": True, "command": command}
@@ -74,3 +81,8 @@ class EspClient:
 
 def ik_move_command(dx: float, dy: float, dz: float, dp: float) -> str:
     return f"IKMOVE:{dx:.2f}:{dy:.2f}:{dz:.2f}:{dp:.2f}"
+
+
+def _warn_if_main_thread(operation: str) -> None:
+    if threading.current_thread() is threading.main_thread():
+        logger.warning("ESP network call made from main thread: %s", operation)

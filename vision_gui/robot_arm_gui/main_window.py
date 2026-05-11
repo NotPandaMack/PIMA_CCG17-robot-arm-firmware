@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import logging
 import time
+from copy import deepcopy
+from time import perf_counter
 from typing import Any
 
-import cv2
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QTimer, Qt, QThreadPool
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
@@ -24,6 +26,7 @@ from .calibration_manager import (
     build_calibration,
     calibration_complete,
     convert_pixel,
+    empty_calibration,
     has_homography,
     load_local_calibration,
     pickup_pose_calibrated,
@@ -31,11 +34,11 @@ from .calibration_manager import (
     table_z_calibrated,
     workspace_bounds_saved,
 )
-from .camera_worker import CameraWorker
-from .config import DEFAULT_HSV_PROFILE, load_settings, normalize_http_url, save_settings
+from .config import DEFAULT_HSV_PROFILE, DEFAULT_SETTINGS, load_settings, normalize_http_url, save_settings
 from .detection_worker import DetectionResult, HSVProfile
 from .esp_client import EspClient
 from .pi_client import PiClient
+from .workers import TaskWorker
 from .widgets.autonomous_page import AutonomousPage
 from .widgets.calibration_page import CalibrationPage
 from .widgets.camera_page import CameraPage
@@ -45,18 +48,28 @@ from .widgets.status_widgets import ChecklistPanel, SafetyBar, StatusPill
 from .widgets.test_page import TestPage
 
 
+logger = logging.getLogger(__name__)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
+        startup_started = perf_counter()
+        logger.info("GUI startup begins")
         super().__init__()
         self.setWindowTitle("Robot Arm Control Center")
-        self.settings = load_settings()
-        self.calibration = load_local_calibration()
+        self.thread_pool = QThreadPool.globalInstance()
+        self._active_workers: list[TaskWorker] = []
+        self.settings = deepcopy(DEFAULT_SETTINGS)
+        self.calibration = empty_calibration()
         self.pi_client = PiClient(self.settings["piUrl"], mock=bool(self.settings.get("mockPi")))
         self.esp_client = EspClient(self.settings["espUrl"], fake=bool(self.settings.get("fakeEsp")))
 
         self.pi_connected = False
         self.esp_connected = False
         self.webcam_connected = False
+        self.pi_tested = False
+        self.esp_tested = False
+        self.webcam_tested = False
         self.last_esp_status: dict[str, Any] | None = None
         self.last_detection: DetectionResult | None = None
         self.last_robot_xy: tuple[float, float] | None = None
@@ -64,17 +77,20 @@ class MainWindow(QMainWindow):
         self.last_frame_size: tuple[int, int] | None = None
         self.last_target_status = "none"
         self.last_send_at = 0.0
-        self.camera_worker: CameraWorker | None = None
+        self.camera_worker: Any | None = None
 
         self._build_ui()
         self._connect_signals()
         self._apply_settings_to_ui()
         self._apply_style()
-        self._start_status_timer()
-        self.refresh_status()
-
-        start_page = "health" if self._is_configured() else "setup"
-        self.go_to(start_page)
+        self._start_nonblocking_timers()
+        self.go_to("setup")
+        self.update_ui_state()
+        QTimer.singleShot(0, self._load_startup_files_async)
+        elapsed_ms = (perf_counter() - startup_started) * 1000.0
+        logger.info("GUI startup ends in %.1f ms", elapsed_ms)
+        if elapsed_ms > 100.0:
+            logger.warning("Startup widget construction took %.1f ms", elapsed_ms)
 
     def closeEvent(self, event: Any) -> None:
         self.stop_camera()
@@ -250,16 +266,53 @@ class MainWindow(QMainWindow):
         self.camera_page.continuous.setChecked(bool(self.settings.get("continuousSend", False)))
         self.camera_page.rate.setValue(int(float(self.settings.get("sendRateHz", 5.0))))
 
-    def _start_status_timer(self) -> None:
-        self.status_timer = QTimer(self)
-        self.status_timer.timeout.connect(self.refresh_status)
-        self.status_timer.start(2500)
-
+    def _start_nonblocking_timers(self) -> None:
         self.auto_pick_timer = QTimer(self)
         self.auto_pick_timer.timeout.connect(self._auto_pick_tick)
         self.auto_pick_timer.start(500)
         self._stable_since: float | None = None
         self._last_auto_pick_at = 0.0
+
+    def _load_startup_files_async(self) -> None:
+        self.log("Startup safe mode: Setup is ready. Hardware has not been tested yet.")
+
+        def task() -> dict[str, Any]:
+            started = perf_counter()
+            settings = load_settings()
+            calibration = load_local_calibration()
+            elapsed_ms = (perf_counter() - started) * 1000.0
+            return {"settings": settings, "calibration": calibration, "elapsedMs": elapsed_ms}
+
+        self._run_background(task, self._on_startup_files_loaded, "Startup settings load failed")
+
+    def _on_startup_files_loaded(self, result: dict[str, Any]) -> None:
+        elapsed_ms = float(result.get("elapsedMs", 0.0))
+        if elapsed_ms > 100.0:
+            logger.warning("Startup settings/calibration load took %.1f ms", elapsed_ms)
+            self.log(f"Startup warning: local settings load took {elapsed_ms:.0f} ms.")
+        self.settings = result["settings"]
+        self.calibration = result["calibration"]
+        self.pi_client.set_base_url(self.settings["piUrl"])
+        self.pi_client.set_mock(bool(self.settings.get("mockPi")))
+        self.esp_client.set_base_url(self.settings["espUrl"])
+        self.esp_client.set_fake(bool(self.settings.get("fakeEsp")))
+        self._apply_settings_to_ui()
+        self.log("Saved settings loaded. Status remains Not tested until you press a test button.")
+        self.update_ui_state()
+
+    def _run_background(self, task: Any, on_result: Any, error_prefix: str, on_error: Any | None = None) -> None:
+        worker = TaskWorker(task)
+        self._active_workers.append(worker)
+        worker.signals.result.connect(on_result)
+        def handle_error(error: str, prefix: str = error_prefix) -> None:
+            message = error.splitlines()[0]
+            self.log(f"{prefix}: {message}")
+            if on_error is not None:
+                on_error(message)
+
+        worker.signals.error.connect(handle_error)
+        worker.signals.finished.connect(lambda w=worker: self._active_workers.remove(w) if w in self._active_workers else None)
+        self.thread_pool.start(worker)
 
     def go_to(self, page: str) -> None:
         self.stack.setCurrentWidget(self.pages[page])
@@ -286,102 +339,180 @@ class MainWindow(QMainWindow):
         save_settings(self.settings)
         self.log("Settings saved.")
         self.connection_page.set_from_settings(self.settings)
-        self.refresh_status()
+        self.update_ui_state()
 
     def test_pi_connection(self) -> None:
         self.save_setup_settings()
-        try:
-            self.pi_client.health()
-            self.pi_connected = True
-            self.log("Pi server connected.")
-            self._load_pi_config_and_calibration()
-        except Exception as error:
-            self.pi_connected = False
-            self.log(f"Pi server unreachable: {error}")
+        self.pi_tested = True
+        self.connection_page.pi_status.set_state("Pi testing", "yellow")
+        self.log("Testing Pi connection in the background.")
+
+        pi_url = self.settings["piUrl"]
+        mock = bool(self.settings.get("mockPi"))
+
+        def task() -> dict[str, Any]:
+            client = PiClient(pi_url, mock=mock)
+            client.health()
+            config = client.get_config().get("config", {})
+            calibration = client.get_calibration()
+            return {"config": config, "calibration": calibration}
+
+        self._run_background(task, self._on_pi_test_result, "Pi server unreachable", self._on_pi_offline)
+
+    def _on_pi_offline(self, _message: str) -> None:
+        self.pi_connected = False
+        self.update_ui_state()
+
+    def _on_pi_test_result(self, result: dict[str, Any]) -> None:
+        self.pi_connected = True
+        self.log("Pi server connected.")
+        self._apply_pi_config_and_calibration(result.get("config", {}), result.get("calibration", {}))
         self.update_ui_state()
 
     def test_esp_connection(self) -> None:
         self.save_setup_settings()
-        try:
-            self.last_esp_status = self.esp_client.status()
-            self.esp_connected = True
-            self.log("ESP connected.")
-        except Exception as error:
-            self.esp_connected = False
-            self.last_esp_status = None
-            self.log(f"ESP unreachable: {error}")
+        self.esp_tested = True
+        self.connection_page.esp_status.set_state("ESP testing", "yellow")
+        self.log("Testing ESP connection in the background.")
+
+        esp_url = self.settings["espUrl"]
+        fake = bool(self.settings.get("fakeEsp"))
+
+        def task() -> dict[str, Any]:
+            return EspClient(esp_url, fake=fake).status()
+
+        self._run_background(task, self._on_esp_status_result, "ESP unreachable", self._on_esp_offline)
+
+    def _on_esp_offline(self, _message: str) -> None:
+        self.esp_connected = False
+        self.last_esp_status = None
+        self.update_ui_state()
+
+    def _on_esp_status_result(self, status: dict[str, Any]) -> None:
+        self.last_esp_status = status
+        self.esp_connected = True
+        self.log("ESP connected.")
         self.update_ui_state()
 
     def test_webcam(self) -> None:
+        self.webcam_tested = True
         index = int(self.settings.get("cameraIndex", 0))
-        cap = cv2.VideoCapture(index)
-        ok = cap.isOpened()
-        if ok:
-            frame_ok, frame = cap.read()
-            ok = bool(frame_ok)
-            if frame_ok:
-                self.last_frame_size = (frame.shape[1], frame.shape[0])
-        cap.release()
-        self.webcam_connected = ok
-        self.log(f"Webcam {index} {'connected' if ok else 'failed to open'}.")
+        self.connection_page.camera_status.set_state("Camera testing", "yellow")
+        self.log(f"Testing webcam {index} in the background.")
+
+        def task() -> dict[str, Any]:
+            import cv2
+
+            cap = cv2.VideoCapture(index)
+            try:
+                ok = cap.isOpened()
+                frame_size = None
+                if ok:
+                    frame_ok, frame = cap.read()
+                    ok = bool(frame_ok)
+                    if frame_ok:
+                        frame_size = (frame.shape[1], frame.shape[0])
+                return {"ok": ok, "frameSize": frame_size}
+            finally:
+                cap.release()
+
+        self._run_background(task, lambda result: self._on_webcam_test_result(index, result), "Webcam test failed", self._on_webcam_offline)
+
+    def _on_webcam_offline(self, _message: str) -> None:
+        self.webcam_connected = False
+        self.update_ui_state()
+
+    def _on_webcam_test_result(self, index: int, result: dict[str, Any]) -> None:
+        self.webcam_connected = bool(result.get("ok"))
+        self.last_frame_size = result.get("frameSize")
+        self.log(f"Webcam {index} {'connected' if self.webcam_connected else 'failed to open'}.")
         self.update_ui_state()
 
     def auto_detect_pi(self) -> None:
+        self.pi_tested = True
         candidates = [self.settings.get("piUrl", ""), "http://raspberrypi.local:8000"]
-        for candidate in candidates:
+        self.connection_page.pi_status.set_state("Pi auto-detecting", "yellow")
+        self.log("Auto-detecting Pi server in the background.")
+
+        def task() -> str | None:
+            for candidate in candidates:
+                if not candidate:
+                    continue
+                try:
+                    PiClient(candidate).health()
+                    return candidate
+                except Exception:
+                    continue
+            return None
+
+        self._run_background(task, self._on_auto_detect_result, "Auto-detect failed")
+
+    def _on_auto_detect_result(self, candidate: str | None) -> None:
+        if candidate:
+            self.settings["piUrl"] = candidate
             self.pi_client.set_base_url(candidate)
-            try:
-                self.pi_client.health()
-                self.settings["piUrl"] = candidate
-                self.connection_page.set_from_settings(self.settings)
-                self.pi_connected = True
-                self.log(f"Auto-detected Pi server at {candidate}.")
-                self.update_ui_state()
-                return
-            except Exception:
-                continue
-        self.log("Auto-detect did not find a Pi server. Enter the Pi URL manually.")
+            self.connection_page.set_from_settings(self.settings)
+            self.pi_connected = True
+            self.log(f"Auto-detected Pi server at {candidate}.")
+        else:
+            self.pi_connected = False
+            self.log("Auto-detect did not find a Pi server. Enter the Pi URL manually.")
         self.update_ui_state()
 
     def refresh_status(self) -> None:
-        try:
-            self.pi_client.set_mock(bool(self.settings.get("mockPi")))
-            self.pi_client.health()
-            self.pi_connected = True
-            self._load_pi_config_and_calibration()
-        except Exception:
-            self.pi_connected = False
+        self.log("Refreshing status in the background.")
+        self.pi_tested = True
+        self.esp_tested = True
+        pi_url = self.settings["piUrl"]
+        esp_url = self.settings["espUrl"]
+        mock_pi = bool(self.settings.get("mockPi"))
+        fake_esp = bool(self.settings.get("fakeEsp"))
 
-        try:
-            self.esp_client.set_fake(bool(self.settings.get("fakeEsp")))
-            self.last_esp_status = self.esp_client.status()
-            self.esp_connected = True
-        except Exception:
-            self.esp_connected = False
-            self.last_esp_status = None
+        def task() -> dict[str, Any]:
+            result: dict[str, Any] = {"piConnected": False, "espConnected": False, "espStatus": None, "config": {}, "calibration": {}}
+            try:
+                pi = PiClient(pi_url, mock=mock_pi)
+                pi.health()
+                result["piConnected"] = True
+                result["config"] = pi.get_config().get("config", {})
+                result["calibration"] = pi.get_calibration()
+            except Exception as error:
+                result["piError"] = str(error)
+            try:
+                result["espStatus"] = EspClient(esp_url, fake=fake_esp).status()
+                result["espConnected"] = True
+            except Exception as error:
+                result["espError"] = str(error)
+            return result
 
+        self._run_background(task, self._on_refresh_result, "Status refresh failed")
+
+    def _on_refresh_result(self, result: dict[str, Any]) -> None:
+        self.pi_connected = bool(result.get("piConnected"))
+        self.esp_connected = bool(result.get("espConnected"))
+        self.last_esp_status = result.get("espStatus")
+        self._apply_pi_config_and_calibration(result.get("config", {}), result.get("calibration", {}))
+        if result.get("piError"):
+            self.log(f"Pi offline: {result['piError']}")
+        if result.get("espError"):
+            self.log(f"ESP offline: {result['espError']}")
         self.update_ui_state()
 
-    def _load_pi_config_and_calibration(self) -> None:
-        try:
-            config = self.pi_client.get_config().get("config", {})
+    def _apply_pi_config_and_calibration(self, config: dict[str, Any], calibration: dict[str, Any]) -> None:
+        if isinstance(config, dict) and config:
             self.settings["motionEnabled"] = bool(config.get("motionEnabled", self.settings.get("motionEnabled", False)))
             self.settings["workspace"] = config.get("workspace", self.settings.get("workspace", {}))
             if config.get("espBaseUrl") and "ESP8266_IP" not in str(config.get("espBaseUrl")):
                 self.settings["espUrl"] = config["espBaseUrl"]
                 self.esp_client.set_base_url(config["espBaseUrl"])
-        except Exception as error:
-            self.log(f"Pi config check failed: {error}")
-        try:
-            calibration = self.pi_client.get_calibration()
-            if isinstance(calibration, dict) and calibration.get("homography"):
-                self.calibration.update(calibration)
-        except Exception as error:
-            self.log(f"Pi calibration check failed: {error}")
+        if isinstance(calibration, dict) and calibration.get("homography"):
+            self.calibration.update(calibration)
 
     def start_camera(self) -> None:
         if self.camera_worker and self.camera_worker.isRunning():
             return
+        from .camera_worker import CameraWorker
+
         profile = self.camera_page.profile()
         self.camera_worker = CameraWorker(int(self.settings.get("cameraIndex", 0)))
         self.camera_worker.configure(profile=profile, homography=self.calibration.get("homography") if has_homography(self.calibration) else None)
@@ -400,6 +531,7 @@ class MainWindow(QMainWindow):
         self.update_ui_state()
 
     def on_camera_status(self, online: bool, message: str) -> None:
+        self.webcam_tested = True
         self.webcam_connected = online
         self.log(message)
         self.update_ui_state()
@@ -407,8 +539,7 @@ class MainWindow(QMainWindow):
     def on_camera_frame(self, frame: Any) -> None:
         h, w = frame.shape[:2]
         self.last_frame_size = (w, h)
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        image = QImage(rgb.data, w, h, rgb.strides[0], QImage.Format_RGB888).copy()
+        image = QImage(frame.data, w, h, frame.strides[0], QImage.Format_BGR888).copy()
         pixmap = QPixmap.fromImage(image)
         for view in (self.camera_page.camera_view, self.calibration_page.camera_view, self.autonomous_page.camera_view):
             view.set_frame(pixmap, (w, h))
@@ -451,16 +582,21 @@ class MainWindow(QMainWindow):
         payload = self.last_detection.as_payload(self.last_robot_xy)
         if payload is None:
             return
-        try:
-            result = self.pi_client.post_target(payload)
+        pi_url = self.settings["piUrl"]
+        mock = bool(self.settings.get("mockPi"))
+
+        def task() -> dict[str, Any]:
+            return PiClient(pi_url, mock=mock).post_target(payload)
+
+        def on_result(result: dict[str, Any]) -> None:
             self.last_send_at = time.monotonic()
             target = result.get("target", payload)
             self.last_target_status = "valid" if target.get("robotX") is not None else "pixels"
             if not silent:
                 self.log("Detected target sent to Pi.")
-        except Exception as error:
-            self.log(f"Target not sent: Pi rejected or unreachable: {error}")
-        self.update_ui_state()
+            self.update_ui_state()
+
+        self._run_background(task, on_result, "Target not sent")
 
     def update_hsv_profile(self, profile: HSVProfile) -> None:
         self.settings["hsv"] = profile.to_settings()
@@ -500,11 +636,13 @@ class MainWindow(QMainWindow):
                     "robotY": robot_xy[1],
                     "confidence": 1.0,
                 }
-                try:
-                    self.pi_client.post_target(payload)
-                    self.log("Calibration validation target sent to Pi.")
-                except Exception as error:
-                    self.log(f"Validation target could not be sent: {error}")
+                pi_url = self.settings["piUrl"]
+                mock = bool(self.settings.get("mockPi"))
+
+                def task() -> dict[str, Any]:
+                    return PiClient(pi_url, mock=mock).post_target(payload)
+
+                self._run_background(task, lambda _result: self.log("Calibration validation target sent to Pi."), "Validation target could not be sent")
             else:
                 self.calibration_page.set_validation_result("Conversion unavailable. Complete camera mapping first.")
 
@@ -532,11 +670,13 @@ class MainWindow(QMainWindow):
             workspace = self.calibration_page.workspace()
             self.calibration["workspaceBounds"] = workspace
             self.settings["workspace"] = workspace
-            try:
-                self.pi_client.put_config({"workspace": workspace})
-                self.log("Workspace bounds saved to Pi.")
-            except Exception as error:
-                self.log(f"Workspace saved locally but not uploaded to Pi: {error}")
+            pi_url = self.settings["piUrl"]
+            mock = bool(self.settings.get("mockPi"))
+
+            def task() -> dict[str, Any]:
+                return PiClient(pi_url, mock=mock).put_config({"workspace": workspace})
+
+            self._run_background(task, lambda _result: self.log("Workspace bounds saved to Pi."), "Workspace saved locally but not uploaded to Pi")
         elif step == 4:
             self.calibration["tableZ"] = self.calibration_page.table_z()
             self.log("Table Z step saved.")
@@ -546,20 +686,30 @@ class MainWindow(QMainWindow):
         self.update_ui_state()
 
     def save_table_touch_point(self, label: str) -> None:
-        try:
-            status = self.esp_client.status()
+        esp_url = self.settings["espUrl"]
+        fake = bool(self.settings.get("fakeEsp"))
+
+        def task() -> dict[str, Any]:
+            return EspClient(esp_url, fake=fake).status()
+
+        def on_result(status: dict[str, Any]) -> None:
             self.last_esp_status = status
             self.esp_connected = True
             self.calibration_page.add_table_point(label, status)
             self.calibration["tableZ"] = self.calibration_page.table_z()
             self.log(f"Saved table touch point: {label}.")
-        except Exception as error:
-            self.log(f"Touch point not saved: ESP status unavailable: {error}")
-        self.update_ui_state()
+            self.update_ui_state()
+
+        self._run_background(task, on_result, "Touch point not saved")
 
     def save_pickup_pose_from_esp(self) -> None:
-        try:
-            status = self.esp_client.status()
+        esp_url = self.settings["espUrl"]
+        fake = bool(self.settings.get("fakeEsp"))
+
+        def task() -> dict[str, Any]:
+            return EspClient(esp_url, fake=fake).status()
+
+        def on_result(status: dict[str, Any]) -> None:
             self.last_esp_status = status
             self.esp_connected = True
             if "pitch" not in status or "z" not in status:
@@ -568,9 +718,9 @@ class MainWindow(QMainWindow):
             self.calibration_page.set_pickup_from_status(status)
             self.calibration.update(self.calibration_page.pickup_values())
             self.log("Pickup pose captured from ESP status.")
-        except Exception as error:
-            self.log(f"Pickup pose not saved: {error}")
-        self.update_ui_state()
+            self.update_ui_state()
+
+        self._run_background(task, on_result, "Pickup pose not saved")
 
     def finish_calibration(self) -> None:
         if not self.last_frame_size:
@@ -604,12 +754,16 @@ class MainWindow(QMainWindow):
             "liftZ": float(self.calibration["liftZ"]),
             "closeClawDegrees": int(self.calibration["clawClosedValue"]),
         }
-        try:
-            self.pi_client.put_calibration(self.calibration)
-            self.pi_client.put_config(config_patch)
-            self.log("Calibration saved locally and uploaded to Pi.")
-        except Exception as error:
-            self.log(f"Calibration saved locally but Pi upload failed: {error}")
+        pi_url = self.settings["piUrl"]
+        mock = bool(self.settings.get("mockPi"))
+        calibration_payload = dict(self.calibration)
+
+        def task() -> dict[str, Any]:
+            client = PiClient(pi_url, mock=mock)
+            client.put_calibration(calibration_payload)
+            return client.put_config(config_patch)
+
+        self._run_background(task, lambda _result: self.log("Calibration saved locally and uploaded to Pi."), "Calibration saved locally but Pi upload failed")
         if self.camera_worker:
             self.camera_worker.configure(homography=self.calibration.get("homography"))
         self.update_ui_state()
@@ -617,8 +771,18 @@ class MainWindow(QMainWindow):
     def generate_preview(self, hover_only: bool = False) -> None:
         if not self._preview_gate():
             return
-        try:
-            plan = self.pi_client.preview_pick(hover_only)
+        payload = self.last_detection.as_payload(self.last_robot_xy) if self.last_detection else None
+        pi_url = self.settings["piUrl"]
+        mock = bool(self.settings.get("mockPi"))
+        self.log("Generating pickup preview in the background.")
+
+        def task() -> dict[str, Any]:
+            client = PiClient(pi_url, mock=mock)
+            if payload is not None:
+                client.post_target(payload)
+            return client.preview_pick(hover_only)
+
+        def on_result(plan: dict[str, Any]) -> None:
             self.last_plan = plan
             self._show_plan(plan)
             if plan.get("ok") and not plan.get("motionEnabled"):
@@ -629,9 +793,9 @@ class MainWindow(QMainWindow):
                 self.log("Preview generated successfully.")
             else:
                 self.log("Preview blocked: " + "; ".join(plan.get("errors", [])))
-        except Exception as error:
-            self.log(f"Preview failed: {error}")
-        self.update_ui_state()
+            self.update_ui_state()
+
+        self._run_background(task, on_result, "Preview failed")
 
     def run_pick(self, hover_only: bool) -> None:
         state = self.checklist_state()
@@ -652,8 +816,14 @@ class MainWindow(QMainWindow):
                     return
                 self.settings["firstPickupConfirmed"] = True
 
-        try:
-            plan = self.pi_client.pick(hover_only)
+        pi_url = self.settings["piUrl"]
+        mock = bool(self.settings.get("mockPi"))
+        self.log("Sending pickup request in the background.")
+
+        def task() -> dict[str, Any]:
+            return PiClient(pi_url, mock=mock).pick(hover_only)
+
+        def on_result(plan: dict[str, Any]) -> None:
             self.last_plan = plan
             self._show_plan(plan)
             if plan.get("sent") and hover_only:
@@ -669,10 +839,10 @@ class MainWindow(QMainWindow):
                 self.log("Motion disabled: ghost mode only.")
             else:
                 self.log("Pickup blocked: " + "; ".join(plan.get("errors", [])))
-        except Exception as error:
-            self.log(f"Pickup failed: {error}")
-        save_settings(self.settings)
-        self.update_ui_state()
+            save_settings(self.settings)
+            self.update_ui_state()
+
+        self._run_background(task, on_result, "Pickup failed")
 
     def enable_motion(self) -> None:
         state = self.checklist_state()
@@ -687,25 +857,39 @@ class MainWindow(QMainWindow):
             return
         if QMessageBox.question(self, "Enable real motion?", "This allows the Pi server to send movement commands to the ESP. Continue?") != QMessageBox.StandardButton.Yes:
             return
-        try:
-            response = self.pi_client.put_config({"motionEnabled": True, "espBaseUrl": self.settings["espUrl"]})
+        pi_url = self.settings["piUrl"]
+        esp_url = self.settings["espUrl"]
+        mock = bool(self.settings.get("mockPi"))
+
+        def task() -> dict[str, Any]:
+            return PiClient(pi_url, mock=mock).put_config({"motionEnabled": True, "espBaseUrl": esp_url})
+
+        def on_result(response: dict[str, Any]) -> None:
             self.settings["motionEnabled"] = bool(response.get("config", {}).get("motionEnabled", True))
             save_settings(self.settings)
             self.log("Motion enabled. Run hover-only movement before full pickup.")
-        except Exception as error:
-            self.log(f"Motion enable failed: {error}")
-        self.update_ui_state()
+            self.update_ui_state()
+
+        self._run_background(task, on_result, "Motion enable failed")
 
     def send_esp_command(self, command: str) -> None:
         if command not in {"STOP", "ESTOP", "CLEAR_ESTOP", "CLEAR_TIMELINE"} and not self.esp_connected and not self.settings.get("fakeEsp"):
             self.log(f"Command not sent: ESP is not connected ({command}).")
             return
-        try:
-            self.esp_client.send_command(command)
+        esp_url = self.settings["espUrl"]
+        fake = bool(self.settings.get("fakeEsp"))
+
+        def task() -> dict[str, Any]:
+            client = EspClient(esp_url, fake=fake)
+            result = client.send_command(command)
+            status = client.status()
+            return {"result": result, "status": status}
+
+        def on_result(result: dict[str, Any]) -> None:
             self.log(f"ESP command sent: {command}")
-            self.test_esp_connection()
-        except Exception as error:
-            self.log(f"ESP command failed: {error}")
+            self._on_esp_status_result(result.get("status", {}))
+
+        self._run_background(task, on_result, "ESP command failed")
 
     def set_auto_pick_enabled(self, enabled: bool) -> None:
         if enabled:
@@ -757,7 +941,6 @@ class MainWindow(QMainWindow):
         if self.last_robot_xy is None:
             self.log("Preview blocked: target has no robot coordinates.")
             return False
-        self.send_detected_target(silent=True)
         return True
 
     def checklist_state(self) -> ChecklistState:
@@ -810,11 +993,24 @@ class MainWindow(QMainWindow):
         )
         self.health_pills["pi"].set_state("Pi online" if state.pi_connected else "Pi offline", "green" if state.pi_connected else "red")
         self.health_pills["esp"].set_state("ESP online" if state.esp_connected else "ESP offline", "green" if state.esp_connected else "red")
-        self.health_pills["estop"].set_state("ESTOP active" if estop_active else "ESTOP inactive", "red" if estop_active else "green")
+        if estop_active is None:
+            self.health_pills["estop"].set_state("ESTOP unknown", "yellow")
+        else:
+            self.health_pills["estop"].set_state("ESTOP active" if estop_active else "ESTOP inactive", "red" if estop_active else "green")
         self.health_pills["camera"].set_state("Webcam online" if state.webcam_connected else "Webcam offline", "green" if state.webcam_connected else "red")
         self.health_pills["calibration"].set_state("Calibrated" if calibrated else "Not calibrated", "green" if calibrated else "red")
         self.health_pills["motion"].set_state("Motion enabled" if state.motion_enabled else "Motion disabled", "green" if state.motion_enabled else "yellow")
         self.health_pills["target"].set_state(f"Target {self.last_target_status}", "green" if state.target_valid else "yellow")
+        if not self.pi_tested:
+            self.connection_page.pi_status.set_state("Pi not tested", "yellow")
+            self.health_pills["pi"].set_state("Pi not tested", "yellow")
+        if not self.esp_tested:
+            self.connection_page.esp_status.set_state("ESP not tested", "yellow")
+            self.health_pills["esp"].set_state("ESP not tested", "yellow")
+            self.health_pills["estop"].set_state("ESTOP not tested", "yellow")
+        if not self.webcam_tested and not self.webcam_connected:
+            self.connection_page.camera_status.set_state("Camera not tested", "yellow")
+            self.health_pills["camera"].set_state("Webcam not tested", "yellow")
 
     def _show_plan(self, plan: dict[str, Any]) -> None:
         self.autonomous_page.update_plan(plan)

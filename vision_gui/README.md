@@ -38,6 +38,8 @@ python app.py
 
 Use Mock Pi and Fake ESP modes to test the workflow without hardware.
 
+The app starts in a startup-safe mode: it does not automatically probe the Pi, ESP, webcam, config, or calibration during window creation. Status begins as Not tested, and hardware checks only run after you press a test button.
+
 ## Beginner Setup Checklist
 
 The checklist controls which actions are available:

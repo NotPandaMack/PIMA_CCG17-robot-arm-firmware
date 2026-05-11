@@ -3,9 +3,6 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
-import cv2
-import numpy as np
-
 
 @dataclass(frozen=True)
 class HSVProfile:
@@ -64,6 +61,9 @@ class DetectionResult:
 
 
 def detect_green_object(frame: np.ndarray, profile: HSVProfile | None = None) -> DetectionResult:
+    import cv2
+    import numpy as np
+
     profile = profile or HSVProfile()
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     lower = np.array([profile.lower_hue, profile.saturation_min, profile.value_min], dtype=np.uint8)
@@ -99,6 +99,8 @@ def draw_detection_overlay(
     robot_xy: tuple[float, float] | None = None,
     calibrated: bool = False,
 ) -> np.ndarray:
+    import cv2
+
     output = frame.copy()
     if detection.found and detection.pixel_x is not None and detection.pixel_y is not None:
         if detection.bounds is not None:
@@ -115,6 +117,9 @@ def draw_detection_overlay(
 
 
 def pixel_to_robot(pixel_x: float, pixel_y: float, homography: Any) -> tuple[float, float] | None:
+    import cv2
+    import numpy as np
+
     matrix = np.array(homography, dtype=np.float64)
     if matrix.shape != (3, 3):
         return None
@@ -124,6 +129,9 @@ def pixel_to_robot(pixel_x: float, pixel_y: float, homography: Any) -> tuple[flo
 
 
 def compute_reprojection_error(pixel_points: np.ndarray, robot_points: np.ndarray, homography: np.ndarray) -> float:
+    import cv2
+    import numpy as np
+
     projected = cv2.perspectiveTransform(pixel_points.reshape(-1, 1, 2), homography).reshape(-1, 2)
     errors = np.linalg.norm(projected - robot_points, axis=1)
     return float(np.mean(errors))

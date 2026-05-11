@@ -3,7 +3,6 @@ from __future__ import annotations
 import time
 from typing import Any
 
-import cv2
 from PySide6.QtCore import QThread, Signal
 
 from .detection_worker import HSVProfile, detect_green_object, draw_detection_overlay, pixel_to_robot
@@ -45,6 +44,8 @@ class CameraWorker(QThread):
         self.wait(1200)
 
     def run(self) -> None:
+        import cv2
+
         self._running = True
         cap = cv2.VideoCapture(self.camera_index)
         if not cap.isOpened():
