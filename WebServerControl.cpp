@@ -37,6 +37,30 @@ static String makeStatusJson() {
   json += "\"wrist\":" + String(getLastWristDeg(), 1) + ",";
 
   json += "\"clawTicks\":" + String(getClawTicks()) + ",";
+  json += "\"servoDegrees\":[";
+  for (int i = 0; i < NUM_SERVOS; i++) {
+    if (i > 0) json += ",";
+    json += String(getServoCurrentDegrees(i), 1);
+  }
+  json += "],";
+  json += "\"servoTicks\":[";
+  for (int i = 0; i < NUM_SERVOS; i++) {
+    if (i > 0) json += ",";
+    json += String(getServoCurrentTicks(i));
+  }
+  json += "],";
+  json += "\"servoTargetDegrees\":[";
+  for (int i = 0; i < NUM_SERVOS; i++) {
+    if (i > 0) json += ",";
+    json += String(getServoTargetDegrees(i), 1);
+  }
+  json += "],";
+  json += "\"servoTargetTicks\":[";
+  for (int i = 0; i < NUM_SERVOS; i++) {
+    if (i > 0) json += ",";
+    json += String(getServoTargetTicks(i));
+  }
+  json += "],";
   json += "\"speed\":" + String(getSpeed()) + ",";
 
   json += "\"lastCommand\":\"" + lastCommandText + "\",";
@@ -435,6 +459,19 @@ static void handleCommand(uint8_t clientNum, String msg) {
 
   if (msg == "CALIBRATE_ZERO") {
     calibrateServosZeroDegrees();
+    return;
+  }
+
+  if (msg.startsWith("SET_SERVO_DEG:")) {
+    int servo = getCommandField(msg, 1).toInt();
+    float degrees = getCommandField(msg, 2).toFloat();
+    setServoDegrees(servo, degrees);
+    return;
+  }
+
+  if (msg.startsWith("SET_ALL_SERVO_DEG:")) {
+    float degrees = getCommandField(msg, 1).toFloat();
+    setAllServoDegrees(degrees);
     return;
   }
 

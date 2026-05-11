@@ -56,33 +56,6 @@ static const float TOOL_GAP_MM = WRIST_TO_CLAW_SERVO_MM + CLAW_SERVO_TO_GAP_MM; 
 // Re-measure later for better table accuracy.
 static const float Z_OFFSET_MM = 140.0;
 
-// ======================================================
-// Wrist Safety
-// ======================================================
-// Wide-open for calibration and expanded testing.
-// Re-tighten before autonomous operation near hard stops or mounted fixtures.
-static const float WRIST_MIN_SAFE_DEG = 0.0;
-static const float WRIST_MAX_UP_SAFE_DEG = 180.0;
-
-// ======================================================
-// Workspace
-// ======================================================
-// Wide-open software workspace for calibration.
-// Physical reach is still limited by IK geometry and servo angle clamps.
-static const float TARGET_X_MIN = -500.0;
-static const float TARGET_X_MAX = 500.0;
-
-static const float TARGET_Y_MIN = -500.0;
-static const float TARGET_Y_MAX = 500.0;
-
-static const float TARGET_Z_MIN = -250.0;
-static const float TARGET_Z_MAX = 500.0;
-
-static const float TOOL_PITCH_MIN = -180.0;
-static const float TOOL_PITCH_MAX = 180.0;
-
-static const float REACH_MARGIN_MM = 0.0;
-
 static const float TABLE_SKIM_Z_MM = 20.0;
 
 // ======================================================

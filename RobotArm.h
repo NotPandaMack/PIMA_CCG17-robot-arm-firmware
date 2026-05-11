@@ -20,6 +20,8 @@ void updateRobotArm();
 void stopRobotMotion();
 void allServosOff();
 void calibrateServosZeroDegrees();
+void setServoDegrees(int servoIndex, float degrees);
+void setAllServoDegrees(float degrees);
 
 void setTarget(float x, float y, float z, float pitch);
 void moveTargetRelative(float dx, float dy, float dz, float dp);
@@ -54,6 +56,10 @@ float getLastElbowDeg();
 float getLastWristDeg();
 
 int getClawTicks();
+float getServoCurrentDegrees(int servoIndex);
+float getServoTargetDegrees(int servoIndex);
+int getServoCurrentTicks(int servoIndex);
+int getServoTargetTicks(int servoIndex);
 
 String getToolModeName();
 String getRobotStatus();

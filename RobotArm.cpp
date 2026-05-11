@@ -42,11 +42,11 @@ struct ServoState {
 };
 
 static ServoState servos[NUM_SERVOS] = {
-  { SERVO_MID, SERVO_MID, 0.0, false, 195, 420 }, // Base
-  { SERVO_MID, SERVO_MID, 0.0, false, 195, 420 }, // Bicep
-  { SERVO_MID, SERVO_MID, 0.0, false, 195, 420 }, // Forearm
-  { SERVO_MID, SERVO_MID, 0.0, false, 195, 420 }, // Wrist
-  { SERVO_MID, SERVO_MID, 0.0, false, 195, 420 }  // Claw
+  { SERVO_MID, SERVO_MID, 0.0, false, SERVO_MIN, SERVO_MAX }, // Base
+  { SERVO_MID, SERVO_MID, 0.0, false, SERVO_MIN, SERVO_MAX }, // Bicep
+  { SERVO_MID, SERVO_MID, 0.0, false, SERVO_MIN, SERVO_MAX }, // Forearm
+  { SERVO_MID, SERVO_MID, 0.0, false, SERVO_MIN, SERVO_MAX }, // Wrist
+  { SERVO_MID, SERVO_MID, 0.0, false, SERVO_MIN, SERVO_MAX }  // Claw
 };
 
 static int lastWritten[NUM_SERVOS] = { -1, -1, -1, -1, -1 };
@@ -173,6 +173,17 @@ static float angleToTicks(float angleDeg, bool invert, float offsetDeg) {
   return clampFloat(ticks, SERVO_MIN, SERVO_MAX);
 }
 
+static float factoryAngleToTicks(float angleDeg) {
+  angleDeg = constrain(angleDeg, 0, 180);
+  float ticks = SERVO_MIN + ((SERVO_MAX - SERVO_MIN) * (angleDeg / 180.0));
+  return clampFloat(ticks, SERVO_MIN, SERVO_MAX);
+}
+
+static float ticksToFactoryAngle(float ticks) {
+  ticks = clampFloat(ticks, SERVO_MIN, SERVO_MAX);
+  return ((ticks - SERVO_MIN) * 180.0) / (SERVO_MAX - SERVO_MIN);
+}
+
 static void setServoTargetFromAngle(int servoIndex, float angleDeg, bool invert, float offsetDeg) {
   float ticks = angleToTicks(angleDeg, invert, offsetDeg);
 
@@ -183,6 +194,13 @@ static void setServoTargetFromAngle(int servoIndex, float angleDeg, bool invert,
   );
 
   ensureServoEnabled(servoIndex);
+}
+
+static void updateLegacyJointTelemetry(int servoIndex, float degrees) {
+  if (servoIndex == BASE) lastBaseDeg = degrees;
+  if (servoIndex == BICEP) lastShoulderDeg = degrees;
+  if (servoIndex == FOREARM) lastElbowServoDeg = degrees;
+  if (servoIndex == WRIST) lastWristDeg = degrees;
 }
 
 // ======================================================
@@ -353,6 +371,41 @@ void calibrateServosZeroDegrees() {
   robotStatus = "Calibration: all servos set to 0 degrees";
 }
 
+void setServoDegrees(int servoIndex, float degrees) {
+  if (estop) return;
+  if (servoIndex < 0 || servoIndex >= NUM_SERVOS) return;
+
+  stopTimeline();
+  stopRobotMotion();
+
+  degrees = constrain(degrees, 0, 180);
+  servos[servoIndex].target = factoryAngleToTicks(degrees);
+  servos[servoIndex].velocity = 0.0;
+  ensureServoEnabled(servoIndex);
+  updateLegacyJointTelemetry(servoIndex, degrees);
+
+  robotStatus = "Calibration: servo set to degrees";
+}
+
+void setAllServoDegrees(float degrees) {
+  if (estop) return;
+
+  stopTimeline();
+  stopRobotMotion();
+
+  degrees = constrain(degrees, 0, 180);
+  float ticks = factoryAngleToTicks(degrees);
+
+  for (int i = 0; i < NUM_SERVOS; i++) {
+    servos[i].target = ticks;
+    servos[i].velocity = 0.0;
+    ensureServoEnabled(i);
+    updateLegacyJointTelemetry(i, degrees);
+  }
+
+  robotStatus = "Calibration: all servos set to degrees";
+}
+
 void setTarget(float x, float y, float z, float pitch) {
   if (estop) return;
 
@@ -441,7 +494,6 @@ void goCarryPose() {
   stopRobotMotion();
 
   targetZ += 75.0;
-  targetZ = clampFloat(targetZ, TARGET_Z_MIN, TARGET_Z_MAX);
 
   calculateIK();
   robotStatus = "Carry pose";
@@ -450,13 +502,6 @@ void goCarryPose() {
 // ======================================================
 // IK
 // ======================================================
-static void clampTargetWorkspace() {
-  targetX = clampFloat(targetX, TARGET_X_MIN, TARGET_X_MAX);
-  targetY = clampFloat(targetY, TARGET_Y_MIN, TARGET_Y_MAX);
-  targetZ = clampFloat(targetZ, TARGET_Z_MIN, TARGET_Z_MAX);
-  toolPitchDeg = clampFloat(toolPitchDeg, TOOL_PITCH_MIN, TOOL_PITCH_MAX);
-}
-
 static void calculateWristTargetFromToolTarget() {
   float toolLength = getActiveToolLength();
 
@@ -467,52 +512,13 @@ static void calculateWristTargetFromToolTarget() {
   float wristR = rTarget - cos(pitchRad) * toolLength;
   float wristZLocal = targetZ - sin(pitchRad) * toolLength;
 
-  wristR = max(wristR, 20.0f);
-
   wristX = sin(baseRad) * wristR;
   wristY = cos(baseRad) * wristR;
   wristZ = wristZLocal;
 }
 
-static void clampWristToReachable() {
-  float r = sqrt(wristX * wristX + wristY * wristY);
-  float zEff = wristZ - Z_OFFSET_MM;
-  float d = sqrt(r * r + zEff * zEff);
-
-  float maxReach = UPPER_ARM_MM + FOREARM_MM - REACH_MARGIN_MM;
-  float minReach = abs(UPPER_ARM_MM - FOREARM_MM) + REACH_MARGIN_MM;
-
-  if (d > maxReach) {
-    float scale = maxReach / d;
-    r *= scale;
-    zEff *= scale;
-
-    float baseRad = atan2(wristX, wristY);
-    wristX = sin(baseRad) * r;
-    wristY = cos(baseRad) * r;
-    wristZ = zEff + Z_OFFSET_MM;
-
-    robotStatus = "Wrist target clamped: too far";
-  }
-
-  if (d < minReach) {
-    float scale = minReach / max(d, 1.0f);
-    r *= scale;
-    zEff *= scale;
-
-    float baseRad = atan2(wristX, wristY);
-    wristX = sin(baseRad) * r;
-    wristY = cos(baseRad) * r;
-    wristZ = zEff + Z_OFFSET_MM;
-
-    robotStatus = "Wrist target clamped: too close";
-  }
-}
-
 bool calculateIK() {
-  clampTargetWorkspace();
   calculateWristTargetFromToolTarget();
-  clampWristToReachable();
 
   float baseAngleRad = atan2(wristX, wristY);
   float baseServoDeg = radToDeg(baseAngleRad) + 90.0;
@@ -520,15 +526,10 @@ bool calculateIK() {
   float r = sqrt(wristX * wristX + wristY * wristY);
   float zEff = wristZ - Z_OFFSET_MM;
   float d = sqrt(r * r + zEff * zEff);
-
-  if (d > (UPPER_ARM_MM + FOREARM_MM) || d < abs(UPPER_ARM_MM - FOREARM_MM)) {
-    robotStatus = "IK failed: unreachable";
-    Serial.println(robotStatus);
-    return false;
-  }
+  float dForAngles = max(d, 0.001f);
 
   float cosElbow = (
-    d * d -
+    dForAngles * dForAngles -
     UPPER_ARM_MM * UPPER_ARM_MM -
     FOREARM_MM * FOREARM_MM
   ) / (2.0 * UPPER_ARM_MM * FOREARM_MM);
@@ -540,9 +541,9 @@ bool calculateIK() {
 
   float betaArg = (
     UPPER_ARM_MM * UPPER_ARM_MM +
-    d * d -
+    dForAngles * dForAngles -
     FOREARM_MM * FOREARM_MM
-  ) / (2.0 * UPPER_ARM_MM * d);
+  ) / (2.0 * UPPER_ARM_MM * dForAngles);
 
   betaArg = constrain(betaArg, -1.0, 1.0);
 
@@ -573,8 +574,7 @@ bool calculateIK() {
   bicepServoDeg = constrain(bicepServoDeg, 0, 180);
   forearmServoDeg = constrain(forearmServoDeg, 0, 180);
 
-  // Important: protects the wrist/claw collision.
-  wristServoDeg = constrain(wristServoDeg, WRIST_MIN_SAFE_DEG, WRIST_MAX_UP_SAFE_DEG);
+  wristServoDeg = constrain(wristServoDeg, 0, 180);
 
   setServoTargetFromAngle(BASE, baseServoDeg, INVERT_BASE, BASE_OFFSET_DEG);
   setServoTargetFromAngle(BICEP, bicepServoDeg, INVERT_BICEP, BICEP_OFFSET_DEG);
@@ -702,6 +702,26 @@ float getLastElbowDeg() { return lastElbowServoDeg; }
 float getLastWristDeg() { return lastWristDeg; }
 
 int getClawTicks() { return roundedTicks(servos[CLAW].target); }
+
+float getServoCurrentDegrees(int servoIndex) {
+  if (servoIndex < 0 || servoIndex >= NUM_SERVOS) return 0.0;
+  return ticksToFactoryAngle(servos[servoIndex].current);
+}
+
+float getServoTargetDegrees(int servoIndex) {
+  if (servoIndex < 0 || servoIndex >= NUM_SERVOS) return 0.0;
+  return ticksToFactoryAngle(servos[servoIndex].target);
+}
+
+int getServoCurrentTicks(int servoIndex) {
+  if (servoIndex < 0 || servoIndex >= NUM_SERVOS) return 0;
+  return roundedTicks(servos[servoIndex].current);
+}
+
+int getServoTargetTicks(int servoIndex) {
+  if (servoIndex < 0 || servoIndex >= NUM_SERVOS) return 0;
+  return roundedTicks(servos[servoIndex].target);
+}
 
 String getToolModeName() {
   return activeToolMode == TOOL_GAP_MODE ? "Deep gap grip" : "Tip grip";
