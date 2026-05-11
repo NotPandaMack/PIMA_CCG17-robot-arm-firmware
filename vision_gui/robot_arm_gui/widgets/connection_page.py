@@ -54,12 +54,14 @@ class ConnectionPage(QWidget):
         settings_card.setObjectName("panel")
         form = QFormLayout(settings_card)
         self.pi_url = QLineEdit()
+        self.website_url = QLineEdit()
         self.esp_url = QLineEdit()
         self.camera_index = QSpinBox()
         self.camera_index.setRange(0, 12)
         self.mock_pi = QCheckBox("Use mock Pi mode")
         self.fake_esp = QCheckBox("Use fake ESP status")
         form.addRow("Raspberry Pi URL", self.pi_url)
+        form.addRow("Website/Pi UI URL", self.website_url)
         form.addRow("ESP URL", self.esp_url)
         form.addRow("Webcam index", self.camera_index)
         form.addRow("", self.mock_pi)
@@ -102,6 +104,7 @@ class ConnectionPage(QWidget):
 
     def set_from_settings(self, settings: dict) -> None:
         self.pi_url.setText(settings.get("piUrl", ""))
+        self.website_url.setText(settings.get("websiteUrl", settings.get("piUrl", "")))
         self.esp_url.setText(settings.get("espUrl", ""))
         self.camera_index.setValue(int(settings.get("cameraIndex", 0)))
         self.mock_pi.setChecked(bool(settings.get("mockPi", False)))
@@ -110,6 +113,7 @@ class ConnectionPage(QWidget):
     def to_settings_patch(self) -> dict:
         return {
             "piUrl": self.pi_url.text().strip(),
+            "websiteUrl": self.website_url.text().strip(),
             "espUrl": self.esp_url.text().strip(),
             "cameraIndex": self.camera_index.value(),
             "mockPi": self.mock_pi.isChecked(),

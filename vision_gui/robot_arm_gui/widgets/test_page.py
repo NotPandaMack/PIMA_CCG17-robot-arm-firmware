@@ -37,9 +37,9 @@ class TestPage(QWidget):
         jog_card = QFrame()
         jog_card.setObjectName("panel")
         jog_layout = QGridLayout(jog_card)
-        self.adapter_dry_run = QCheckBox("Movement adapter dry-run")
+        self.adapter_dry_run = QCheckBox("PyGUI safety dry-run")
         self.adapter_dry_run.setChecked(True)
-        self.adapter_dry_run.setToolTip("Logs web-compatible commands without sending them to the ESP.")
+        self.adapter_dry_run.setToolTip("Logs STOP/ESTOP commands without sending them to the ESP.")
         self.adapter_dry_run.toggled.connect(self.dry_run_changed.emit)
         jog_layout.addWidget(self.adapter_dry_run, 0, 0, 1, 2)
         jogs = [
@@ -54,12 +54,13 @@ class TestPage(QWidget):
         ]
         for index, (label, axis, direction) in enumerate(jogs):
             button = QPushButton(label)
+            button.setEnabled(False)
             button.clicked.connect(lambda _checked=False, jog_axis=axis, jog_direction=direction: self.jog_requested.emit(jog_axis, jog_direction))
             jog_layout.addWidget(button, (index // 2) + 1, index % 2)
         self.calibration_lowering_mode = QCheckBox("Calibration lowering mode")
         self.calibration_lowering_mode.setToolTip("Allows small Z lowering during table touch calibration only.")
         jog_layout.addWidget(self.calibration_lowering_mode, 5, 0, 1, 2)
-        warning = QLabel("Jogging sends full SET_TARGET commands using latest ESP X/Y/Z/Pitch. Z lowering is limited for table safety.")
+        warning = QLabel("Direct PyGUI movement is disabled. Send targets to the website and move from the trusted website controls.")
         warning.setWordWrap(True)
         jog_layout.addWidget(warning, 6, 0, 1, 2)
         layout.addWidget(jog_card, 0, 1)
@@ -76,6 +77,7 @@ class TestPage(QWidget):
             ("Clear ESTOP", "CLEAR_ESTOP"),
         ]:
             button = QPushButton(label)
+            button.setEnabled(command in {"STOP", "ESTOP"})
             if command == "ESTOP":
                 button.setObjectName("dangerButton")
             button.clicked.connect(lambda _checked=False, cmd=command: self.command_requested.emit(cmd))

@@ -63,9 +63,43 @@ def validate_target_payload(payload: Any) -> dict[str, Any]:
     return target
 
 
+def validate_website_vision_target_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValidationError("payload must be a JSON object")
+
+    source = payload.get("source")
+    if source != "vision_gui":
+        raise ValidationError("source must be vision_gui")
+
+    object_name = payload.get("object")
+    if not isinstance(object_name, str) or not object_name.strip():
+        raise ValidationError("object must be a non-empty string")
+
+    robot_x = _required_number(payload, "robotX")
+    robot_y = _required_number(payload, "robotY")
+    robot_z = _required_number(payload, "robotZ")
+    pitch = _required_number(payload, "pitch")
+    confidence = _required_number(payload, "confidence")
+    if confidence < 0.0 or confidence > 1.0:
+        raise ValidationError("confidence must be between 0 and 1")
+
+    for label, value in (("robotX", robot_x), ("robotY", robot_y), ("robotZ", robot_z), ("pitch", pitch)):
+        if abs(value) > 10000:
+            raise ValidationError(f"{label} is outside accepted robot coordinate limits")
+
+    return {
+        "source": "vision_gui",
+        "object": object_name.strip()[:80],
+        "robotX": float(robot_x),
+        "robotY": float(robot_y),
+        "robotZ": float(robot_z),
+        "pitch": float(pitch),
+        "confidence": float(confidence),
+    }
+
+
 def _required_number(payload: dict[str, Any], key: str) -> float:
     value = payload.get(key)
     if not isinstance(value, (int, float)) or not math.isfinite(float(value)):
         raise ValidationError(f"{key} must be a finite number")
     return float(value)
-

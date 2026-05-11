@@ -30,6 +30,7 @@ DEFAULT_HSV_PROFILE = {
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "piUrl": "http://raspberrypi.local:8000",
+    "websiteUrl": "http://raspberrypi.local:8000",
     "espUrl": "http://ESP8266_IP",
     "cameraIndex": 0,
     "motionEnabled": False,
@@ -61,6 +62,7 @@ def load_settings(path: Path = SETTINGS_PATH) -> dict[str, Any]:
         if isinstance(raw, dict):
             _deep_update(settings, raw)
     settings["piUrl"] = normalize_http_url(settings.get("piUrl", DEFAULT_SETTINGS["piUrl"]), with_port=True)
+    settings["websiteUrl"] = normalize_http_url(settings.get("websiteUrl", settings["piUrl"]), with_port=True)
     settings["espUrl"] = normalize_http_url(settings.get("espUrl", DEFAULT_SETTINGS["espUrl"]), with_port=False)
     settings["cameraIndex"] = int(settings.get("cameraIndex", 0))
     return settings

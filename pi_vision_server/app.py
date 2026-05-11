@@ -16,7 +16,7 @@ from .config import config_to_dict, load_config, update_config
 from .esp_client import EspClient
 from .planner import build_pick_plan, execute_plan
 from .store import TargetStore
-from .validation import ValidationError, validate_target_payload
+from .validation import ValidationError, validate_target_payload, validate_website_vision_target_payload
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Robot Arm Vision Bridge")
 store = TargetStore()
+website_vision_store = TargetStore()
 
 app.add_middleware(
     CORSMiddleware,
@@ -91,6 +92,44 @@ def get_target() -> dict[str, Any]:
 def clear_target() -> dict[str, Any]:
     store.clear()
     logger.info("Vision target cleared")
+    return {"ok": True, "hasTarget": False}
+
+
+@app.post("/api/vision-target")
+async def post_website_vision_target(request: Request) -> dict[str, Any]:
+    try:
+        payload = await request.json()
+        target = validate_website_vision_target_payload(payload)
+        stored = website_vision_store.set(target)
+    except ValidationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=400, detail="invalid JSON payload") from error
+
+    logger.info(
+        "Received vision target object=%s robot=(%.1f,%.1f,%.1f) pitch=%.1f confidence=%.2f",
+        stored.get("object"),
+        stored.get("robotX"),
+        stored.get("robotY"),
+        stored.get("robotZ"),
+        stored.get("pitch"),
+        stored.get("confidence"),
+    )
+    return {"ok": True, "target": stored}
+
+
+@app.get("/api/vision-target")
+def get_website_vision_target() -> dict[str, Any]:
+    target = website_vision_store.get()
+    if target is None:
+        return {"hasTarget": False, "target": None}
+    return {"hasTarget": True, "target": target}
+
+
+@app.post("/api/vision-target/clear")
+def clear_website_vision_target() -> dict[str, Any]:
+    website_vision_store.clear()
+    logger.info("Website vision target cleared")
     return {"ok": True, "hasTarget": False}
 
 

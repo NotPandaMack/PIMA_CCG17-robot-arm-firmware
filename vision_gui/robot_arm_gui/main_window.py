@@ -38,8 +38,8 @@ from .config import DEFAULT_HSV_PROFILE, DEFAULT_SETTINGS, load_settings, normal
 from .detection_worker import DetectionResult, HSVProfile
 from .esp_client import EspClient
 from .pi_client import PiClient
-from .robot_motion_adapter import RobotMotionAdapter
 from .workers import TaskWorker
+from .website_client import WebsiteClient
 from .widgets.autonomous_page import AutonomousPage
 from .widgets.calibration_page import CalibrationPage
 from .widgets.camera_page import CameraPage
@@ -335,6 +335,7 @@ class MainWindow(QMainWindow):
     def save_setup_settings(self) -> None:
         patch = self.connection_page.to_settings_patch()
         patch["piUrl"] = normalize_http_url(patch["piUrl"], with_port=True)
+        patch["websiteUrl"] = normalize_http_url(patch["websiteUrl"], with_port=True)
         patch["espUrl"] = normalize_http_url(patch["espUrl"], with_port=False)
         self.settings.update(patch)
         self.pi_client.set_base_url(self.settings["piUrl"])
@@ -584,24 +585,57 @@ class MainWindow(QMainWindow):
             if not silent:
                 self.log("Target not sent: no object detected.")
             return
-        payload = self.last_detection.as_payload(self.last_robot_xy)
+        payload = self._website_target_payload(self.last_detection, self.last_robot_xy)
         if payload is None:
+            self.log("Target not sent: robot coordinates are missing.")
             return
-        pi_url = self.settings["piUrl"]
+        website_url = self.settings.get("websiteUrl", self.settings["piUrl"])
         mock = bool(self.settings.get("mockPi"))
 
         def task() -> dict[str, Any]:
-            return PiClient(pi_url, mock=mock).post_target(payload)
+            return WebsiteClient(website_url, mock=mock).post_vision_target(payload)
 
         def on_result(result: dict[str, Any]) -> None:
             self.last_send_at = time.monotonic()
             target = result.get("target", payload)
             self.last_target_status = "valid" if target.get("robotX") is not None else "pixels"
             if not silent:
-                self.log("Detected target sent to Pi.")
+                self.log(
+                    f"Sent vision target to website: X {target.get('robotX'):.1f}, Y {target.get('robotY'):.1f}, "
+                    f"Z {target.get('robotZ'):.1f}, Pitch {target.get('pitch'):.1f}"
+                )
             self.update_ui_state()
 
-        self._run_background(task, on_result, "Target not sent")
+        self._run_background(task, on_result, "Target not sent to website")
+
+    def _website_target_payload(self, detection: DetectionResult, robot_xy: tuple[float, float] | None) -> dict[str, Any] | None:
+        if robot_xy is None:
+            return None
+        robot_z = self._default_target_z()
+        pitch = self._default_target_pitch()
+        return {
+            "source": "vision_gui",
+            "object": "green_object",
+            "robotX": float(robot_xy[0]),
+            "robotY": float(robot_xy[1]),
+            "robotZ": robot_z,
+            "pitch": pitch,
+            "confidence": float(detection.confidence),
+        }
+
+    def _default_target_z(self) -> float:
+        if self.last_esp_status and isinstance(self.last_esp_status.get("z"), (int, float)):
+            return float(self.last_esp_status["z"])
+        if isinstance(self.calibration.get("hoverZ"), (int, float)):
+            return float(self.calibration["hoverZ"])
+        return 80.0
+
+    def _default_target_pitch(self) -> float:
+        if self.last_esp_status and isinstance(self.last_esp_status.get("pitch"), (int, float)):
+            return float(self.last_esp_status["pitch"])
+        if isinstance(self.calibration.get("pickupPitchDeg"), (int, float)):
+            return float(self.calibration["pickupPitchDeg"])
+        return 0.0
 
     def update_hsv_profile(self, profile: HSVProfile) -> None:
         self.settings["hsv"] = profile.to_settings()
@@ -645,22 +679,22 @@ class MainWindow(QMainWindow):
                     f"raw widget click: {mapped.get('widgetX', 0):.1f}, {mapped.get('widgetY', 0):.1f}\n"
                     f"displayed image click: {mapped.get('displayX', 0):.1f}, {mapped.get('displayY', 0):.1f}"
                 )
+                website_url = self.settings.get("websiteUrl", self.settings["piUrl"])
+                mock = bool(self.settings.get("mockPi"))
                 payload = {
-                    "type": "object_detected",
+                    "source": "vision_gui",
                     "object": "calibration_validation",
-                    "pixelX": x,
-                    "pixelY": y,
                     "robotX": robot_xy[0],
                     "robotY": robot_xy[1],
+                    "robotZ": self._default_target_z(),
+                    "pitch": self._default_target_pitch(),
                     "confidence": 1.0,
                 }
-                pi_url = self.settings["piUrl"]
-                mock = bool(self.settings.get("mockPi"))
 
                 def task() -> dict[str, Any]:
-                    return PiClient(pi_url, mock=mock).post_target(payload)
+                    return WebsiteClient(website_url, mock=mock).post_vision_target(payload)
 
-                self._run_background(task, lambda _result: self.log("Calibration validation target sent to Pi."), "Validation target could not be sent")
+                self._run_background(task, lambda _result: self.log("Calibration validation target sent to website."), "Validation target could not be sent")
             else:
                 self.calibration_page.camera_view.set_marker(x, y, f"px=({x},{y})")
                 self.calibration_page.set_validation_result("Conversion unavailable. Complete camera mapping first.")
@@ -797,121 +831,46 @@ class MainWindow(QMainWindow):
     def generate_preview(self, hover_only: bool = False) -> None:
         if not self._preview_gate():
             return
-        payload = self.last_detection.as_payload(self.last_robot_xy) if self.last_detection else None
-        pi_url = self.settings["piUrl"]
+        payload = self._website_target_payload(self.last_detection, self.last_robot_xy) if self.last_detection else None
+        website_url = self.settings.get("websiteUrl", self.settings["piUrl"])
         mock = bool(self.settings.get("mockPi"))
-        self.log("Generating pickup preview in the background.")
+        self.log("Sending target to website for trusted preview/movement.")
 
         def task() -> dict[str, Any]:
-            client = PiClient(pi_url, mock=mock)
+            client = WebsiteClient(website_url, mock=mock)
             if payload is not None:
-                client.post_target(payload)
-            return client.preview_pick(hover_only)
+                return client.post_vision_target(payload)
+            raise RuntimeError("target payload is missing")
 
-        def on_result(plan: dict[str, Any]) -> None:
-            self.last_plan = plan
-            self._show_plan(plan)
-            if plan.get("ok") and not plan.get("motionEnabled"):
-                self.settings["ghostPreviewPassed"] = True
-                save_settings(self.settings)
-                self.log("Ghost preview generated successfully.")
-            elif plan.get("ok"):
-                self.log("Preview generated successfully.")
-            else:
-                self.log("Preview blocked: " + "; ".join(plan.get("errors", [])))
+        def on_result(result: dict[str, Any]) -> None:
+            target = result.get("target", payload)
+            self.settings["ghostPreviewPassed"] = True
+            save_settings(self.settings)
+            self.log(
+                f"Sent vision target to website: X {target.get('robotX'):.1f}, Y {target.get('robotY'):.1f}, "
+                f"Z {target.get('robotZ'):.1f}, Pitch {target.get('pitch'):.1f}. Use website Preview/Move buttons."
+            )
             self.update_ui_state()
 
-        self._run_background(task, on_result, "Preview failed")
+        self._run_background(task, on_result, "Website target send failed")
 
     def run_pick(self, hover_only: bool) -> None:
-        state = self.checklist_state()
-        if hover_only:
-            if not (state.motion_enabled and state.ghost_preview_passed and state.target_valid and state.estop_inactive):
-                self.log("Hover-only movement blocked: complete calibration, ghost preview, target, motion, and ESTOP checks first.")
-                return
-            if not self.settings.get("firstHoverConfirmed"):
-                if QMessageBox.question(self, "Run first hover movement?", "The robot will move only to safe hover above the target. Continue?") != QMessageBox.StandardButton.Yes:
-                    return
-                self.settings["firstHoverConfirmed"] = True
-        else:
-            if not state.full_pickup_ready:
-                self.log("Full pickup locked: hover-only real movement must pass first.")
-                return
-            if not self.settings.get("firstPickupConfirmed"):
-                if QMessageBox.question(self, "Run first full pickup?", "The robot will run the full pickup timeline. Continue?") != QMessageBox.StandardButton.Yes:
-                    return
-                self.settings["firstPickupConfirmed"] = True
-
-        pi_url = self.settings["piUrl"]
-        mock = bool(self.settings.get("mockPi"))
-        self.log("Sending pickup request in the background.")
-
-        def task() -> dict[str, Any]:
-            return PiClient(pi_url, mock=mock).pick(hover_only)
-
-        def on_result(plan: dict[str, Any]) -> None:
-            self.last_plan = plan
-            self._show_plan(plan)
-            if plan.get("sent") and hover_only:
-                if QMessageBox.question(self, "Confirm hover-only result", "Did the arm only move to a safe hover above the target?") == QMessageBox.StandardButton.Yes:
-                    self.settings["hoverOnlyMovementPassed"] = True
-                    self.log("Hover-only movement marked as passed.")
-                else:
-                    self.settings["hoverOnlyMovementPassed"] = False
-                    self.log("Hover-only movement was not marked as passed; full pickup remains locked.")
-            elif plan.get("sent"):
-                self.log("Full pickup command sent.")
-            elif plan.get("ok") and not plan.get("motionEnabled"):
-                self.log("Motion disabled: ghost mode only.")
-            else:
-                self.log("Pickup blocked: " + "; ".join(plan.get("errors", [])))
-            save_settings(self.settings)
-            self.update_ui_state()
-
-        self._run_background(task, on_result, "Pickup failed")
+        self.log("PyGUI movement disabled. Send/load the vision target and run Hover/Move from the trusted website UI.")
+        self.generate_preview(hover_only)
 
     def enable_motion(self) -> None:
-        state = self.checklist_state()
-        if not (state.camera_calibration_complete and state.workspace_bounds_saved and state.table_z_calibrated and state.pickup_pose_calibrated):
-            self.log("Motion enable blocked: calibration is incomplete.")
-            return
-        if not state.ghost_preview_passed:
-            self.log("Motion enable blocked: run a successful ghost preview first.")
-            return
-        if not state.estop_inactive:
-            self.log("Motion enable blocked: ESTOP is active.")
-            return
-        if QMessageBox.question(self, "Enable real motion?", "This allows the Pi server to send movement commands to the ESP. Continue?") != QMessageBox.StandardButton.Yes:
-            return
-        pi_url = self.settings["piUrl"]
-        esp_url = self.settings["espUrl"]
-        mock = bool(self.settings.get("mockPi"))
-
-        def task() -> dict[str, Any]:
-            return PiClient(pi_url, mock=mock).put_config({"motionEnabled": True, "espBaseUrl": esp_url})
-
-        def on_result(response: dict[str, Any]) -> None:
-            self.settings["motionEnabled"] = bool(response.get("config", {}).get("motionEnabled", True))
-            save_settings(self.settings)
-            self.log("Motion enabled. Run hover-only movement before full pickup.")
-            self.update_ui_state()
-
-        self._run_background(task, on_result, "Motion enable failed")
+        self.log("Motion enable is controlled by the trusted website UI. PyGUI stays in target-send mode.")
 
     def set_movement_adapter_dry_run(self, enabled: bool) -> None:
         self.settings["movementAdapterDryRun"] = enabled
         save_settings(self.settings)
-        self.log("Movement adapter dry-run enabled." if enabled else "Movement adapter dry-run disabled.")
-
-    def _movement_adapter(self, client: EspClient) -> RobotMotionAdapter:
-        return RobotMotionAdapter(
-            client,
-            dry_run=bool(self.settings.get("movementAdapterDryRun", True)),
-            logger=self.log,
-        )
+        self.log("PyGUI safety dry-run enabled." if enabled else "PyGUI safety dry-run disabled.")
 
     def send_esp_command(self, command: str) -> None:
-        if command not in {"STOP", "ESTOP", "CLEAR_ESTOP", "CLEAR_TIMELINE"} and not self.esp_connected and not self.settings.get("fakeEsp"):
+        if command not in {"STOP", "ESTOP"}:
+            self.log(f"PyGUI command disabled: use the trusted website UI for {command}.")
+            return
+        if not self.esp_connected and not self.settings.get("fakeEsp"):
             self.log(f"Command not sent: ESP is not connected ({command}).")
             return
         esp_url = self.settings["espUrl"]
@@ -920,14 +879,16 @@ class MainWindow(QMainWindow):
 
         def task() -> dict[str, Any]:
             client = EspClient(esp_url, fake=fake)
-            adapter = RobotMotionAdapter(client, dry_run=dry_run, logger=lambda message: None)
-            result = adapter.send_web_command(command)
-            return {"result": result, "status": result.status, "command": result.command, "sent": result.sent}
+            if dry_run:
+                return {"status": {}, "command": command, "sent": False}
+            response = client.send_command(command)
+            status = client.status() if command != "ESTOP" else response
+            return {"status": status, "command": command, "sent": True}
 
         def on_result(result: dict[str, Any]) -> None:
             self.log(f"PyGUI sending same as web UI: {result['command']}")
             if not result.get("sent"):
-                self.log(f"Movement adapter dry-run: not sent: {result['command']}")
+                self.log(f"PyGUI safety dry-run: not sent: {result['command']}")
             else:
                 self.log(f"ESP command sent: {result['command']}")
                 self._on_esp_status_result(result.get("status", {}))
@@ -935,65 +896,13 @@ class MainWindow(QMainWindow):
         self._run_background(task, on_result, "ESP command failed")
 
     def send_safe_jog(self, axis: str, direction: int) -> None:
-        if not self.esp_connected and not self.settings.get("fakeEsp"):
-            self.log("Jog refused: ESP is not connected. Refresh or test ESP status first.")
-            return
-        esp_url = self.settings["espUrl"]
-        fake = bool(self.settings.get("fakeEsp"))
-        table_z = self._current_table_z_for_manual_jog()
-        calibration_touch_mode = self.test_page.calibration_touch_mode_enabled()
-        dry_run = bool(self.settings.get("movementAdapterDryRun", True))
-        delta = 2.0 * direction
-
-        def task() -> dict[str, Any]:
-            client = EspClient(esp_url, fake=fake)
-            adapter = RobotMotionAdapter(client, dry_run=dry_run, logger=lambda message: None)
-            result = adapter.jog_axis(
-                axis,
-                delta,
-                table_z=table_z,
-                calibration_touch_mode=calibration_touch_mode,
-            )
-            return {"status": result.status, "pose": result.pose, "command": result.command, "sent": result.sent}
-
-        def on_result(result: dict[str, Any]) -> None:
-            pose = result["pose"]
-            command = result["command"]
-            self.test_page.set_proposed_jog({"x": pose.x, "y": pose.y, "z": pose.z, "pitch": pose.pitch}, command)
-            self.log(f"Jog command: {command}")
-            self.log(f"PyGUI sending same as web UI: {command}")
-            if not result.get("sent"):
-                self.log(f"Movement adapter dry-run: not sent: {command}")
-            else:
-                self._on_esp_status_result(result.get("status", {}))
-
-        self._run_background(task, on_result, "Jog refused")
-
-    def _current_table_z_for_manual_jog(self) -> float | None:
-        if not self.last_esp_status:
-            return None
-        try:
-            from .calibration_manager import estimate_table_z
-
-            x = float(self.last_esp_status.get("x"))
-            y = float(self.last_esp_status.get("y"))
-            return estimate_table_z(self.calibration, x, y)
-        except Exception:
-            return None
+        self.log("Manual jog disabled in PyGUI. Load and move targets from the trusted website UI.")
 
     def set_auto_pick_enabled(self, enabled: bool) -> None:
         if enabled:
-            state = self.checklist_state()
-            if not state.full_pickup_ready:
-                self.autonomous_page.auto_pick.setChecked(False)
-                self.log("Auto-pick blocked: full pickup is not ready.")
-                return
-            if not self.settings.get("autoPickConfirmed"):
-                if QMessageBox.question(self, "Enable auto-pick?", "Auto-pick will trigger after a stable valid object and cooldown. Continue?") != QMessageBox.StandardButton.Yes:
-                    self.autonomous_page.auto_pick.setChecked(False)
-                    return
-                self.settings["autoPickConfirmed"] = True
-            self.log("Auto-pick enabled.")
+            self.autonomous_page.auto_pick.setChecked(False)
+            self.log("Auto-pick disabled in PyGUI. Use the trusted website UI to move after loading a vision target.")
+            enabled = False
         else:
             self.log("Auto-pick disabled.")
         self.settings["autoPickEnabled"] = enabled
@@ -1065,21 +974,13 @@ class MainWindow(QMainWindow):
         self.health_checklist.update_state(state)
         self.connection_page.update_statuses(state.pi_connected, state.esp_connected, state.webcam_connected)
         self.test_page.update_status(self.last_esp_status)
-        self.test_page.set_motion_button_enabled(
-            state.camera_calibration_complete
-            and state.workspace_bounds_saved
-            and state.table_z_calibrated
-            and state.pickup_pose_calibrated
-            and state.ghost_preview_passed
-            and state.estop_inactive
-            and not state.motion_enabled
-        )
+        self.test_page.set_motion_button_enabled(False)
         self.preview_button.setEnabled(state.target_valid and calibrated)
         self.hover_preview_button.setEnabled(state.target_valid and calibrated)
         self.autonomous_page.set_buttons(
             can_preview=state.target_valid and calibrated,
-            can_hover=state.motion_enabled and state.ghost_preview_passed and state.target_valid and state.estop_inactive,
-            can_pick=state.full_pickup_ready,
+            can_hover=False,
+            can_pick=False,
         )
         self.health_pills["pi"].set_state("Pi online" if state.pi_connected else "Pi offline", "green" if state.pi_connected else "red")
         self.health_pills["esp"].set_state("ESP online" if state.esp_connected else "ESP offline", "green" if state.esp_connected else "red")
