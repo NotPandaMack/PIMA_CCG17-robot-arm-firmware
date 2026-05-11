@@ -9,25 +9,10 @@
 Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver(PCA9685_ADDRESS);
 
 // ======================================================
-// Calibration
+// Logical Servo Calibration
 // ======================================================
-static bool INVERT_BASE    = false;
-static bool INVERT_BICEP   = false;
-static bool INVERT_FOREARM = true;
-static bool INVERT_WRIST   = false;
-
-static float BASE_OFFSET_DEG    = 0.0;
-static float BICEP_OFFSET_DEG   = 0.0;
-static float FOREARM_OFFSET_DEG = 0.0;
-static float WRIST_OFFSET_DEG   = 0.0;
-
-static float WRIST_NEUTRAL_DEG = 90.0;
-
-// If wrist compensation moves the wrong way, set true.
-static bool INVERT_WRIST_COMPENSATION = false;
-
-// If the arm folds the wrong way, set true.
-static bool ELBOW_UP_SOLUTION = false;
+static const float BICEP_PHYSICAL_ZERO_DEG = 3.0;
+static const float GRIPPER_TIPS_TOUCH_DEG = 55.0;
 
 // ======================================================
 // Servo State
@@ -92,7 +77,6 @@ static float wristZ = 0.0;
 static float lastBaseDeg = 90.0;
 static float lastShoulderDeg = 90.0;
 static float lastElbowServoDeg = 90.0;
-static float lastForearmAbsDeg = 0.0;
 static float lastWristDeg = 90.0;
 
 // ======================================================
@@ -131,6 +115,38 @@ static float getActiveToolLength() {
 // ======================================================
 // Servo Low-Level
 // ======================================================
+static float factoryAngleToTicks(float angleDeg);
+static float ticksToFactoryAngle(float ticks);
+
+static float logicalToPhysicalDegrees(int servoIndex, float logicalDeg) {
+  logicalDeg = constrain(logicalDeg, 0, 180);
+
+  if (servoIndex == BICEP) {
+    return BICEP_PHYSICAL_ZERO_DEG + (logicalDeg * (180.0 - BICEP_PHYSICAL_ZERO_DEG) / 180.0);
+  }
+
+  return logicalDeg;
+}
+
+static float physicalToLogicalDegrees(int servoIndex, float physicalDeg) {
+  physicalDeg = constrain(physicalDeg, 0, 180);
+
+  if (servoIndex == BICEP) {
+    if (physicalDeg <= BICEP_PHYSICAL_ZERO_DEG) return 0.0;
+    return (physicalDeg - BICEP_PHYSICAL_ZERO_DEG) * 180.0 / (180.0 - BICEP_PHYSICAL_ZERO_DEG);
+  }
+
+  return physicalDeg;
+}
+
+static float logicalDegreesToTicks(int servoIndex, float logicalDeg) {
+  return factoryAngleToTicks(logicalToPhysicalDegrees(servoIndex, logicalDeg));
+}
+
+static float ticksToLogicalDegrees(int servoIndex, float ticks) {
+  return physicalToLogicalDegrees(servoIndex, ticksToFactoryAngle(ticks));
+}
+
 static void disableServo(int i) {
   if (i < 0 || i >= NUM_SERVOS) return;
 
@@ -161,18 +177,6 @@ static void ensureServoEnabled(int i) {
   }
 }
 
-static float angleToTicks(float angleDeg, bool invert, float offsetDeg) {
-  angleDeg += offsetDeg;
-  angleDeg = constrain(angleDeg, 0, 180);
-
-  if (invert) {
-    angleDeg = 180.0 - angleDeg;
-  }
-
-  float ticks = SERVO_MIN + ((SERVO_MAX - SERVO_MIN) * (angleDeg / 180.0));
-  return clampFloat(ticks, SERVO_MIN, SERVO_MAX);
-}
-
 static float factoryAngleToTicks(float angleDeg) {
   angleDeg = constrain(angleDeg, 0, 180);
   float ticks = SERVO_MIN + ((SERVO_MAX - SERVO_MIN) * (angleDeg / 180.0));
@@ -184,14 +188,14 @@ static float ticksToFactoryAngle(float ticks) {
   return ((ticks - SERVO_MIN) * 180.0) / (SERVO_MAX - SERVO_MIN);
 }
 
-static void setServoTargetFromAngle(int servoIndex, float angleDeg, bool invert, float offsetDeg) {
-  float ticks = angleToTicks(angleDeg, invert, offsetDeg);
+static void applyServoSafeBounds() {
+  servos[BICEP].minSafe = roundedTicks(logicalDegreesToTicks(BICEP, 0.0));
+  servos[BICEP].maxSafe = SERVO_MAX;
+}
 
-  servos[servoIndex].target = clampFloat(
-    ticks,
-    servos[servoIndex].minSafe,
-    servos[servoIndex].maxSafe
-  );
+static void setServoTargetFromLogicalDegrees(int servoIndex, float logicalDeg) {
+  float ticks = logicalDegreesToTicks(servoIndex, logicalDeg);
+  servos[servoIndex].target = clampFloat(ticks, servos[servoIndex].minSafe, servos[servoIndex].maxSafe);
 
   ensureServoEnabled(servoIndex);
 }
@@ -208,6 +212,7 @@ static void updateLegacyJointTelemetry(int servoIndex, float degrees) {
 // ======================================================
 void setupRobotArm() {
   Wire.begin(SDA_PIN, SCL_PIN);
+  applyServoSafeBounds();
 
   pwm.begin();
   pwm.setOscillatorFrequency(27000000);
@@ -349,13 +354,14 @@ void calibrateServosZeroDegrees() {
   estop = false;
 
   for (int i = 0; i < NUM_SERVOS; i++) {
-    servos[i].current = SERVO_MIN;
-    servos[i].target = SERVO_MIN;
+    float ticks = logicalDegreesToTicks(i, 0.0);
+    servos[i].current = ticks;
+    servos[i].target = ticks;
     servos[i].velocity = 0.0;
     servos[i].enabled = true;
 
-    pwm.setPWM(SERVO_CHANNELS[i], 0, SERVO_MIN);
-    lastWritten[i] = SERVO_MIN;
+    pwm.setPWM(SERVO_CHANNELS[i], 0, roundedTicks(ticks));
+    lastWritten[i] = roundedTicks(ticks);
   }
 
   targetX = 0.0;
@@ -379,7 +385,7 @@ void setServoDegrees(int servoIndex, float degrees) {
   stopRobotMotion();
 
   degrees = constrain(degrees, 0, 180);
-  servos[servoIndex].target = factoryAngleToTicks(degrees);
+  servos[servoIndex].target = logicalDegreesToTicks(servoIndex, degrees);
   servos[servoIndex].velocity = 0.0;
   ensureServoEnabled(servoIndex);
   updateLegacyJointTelemetry(servoIndex, degrees);
@@ -394,10 +400,9 @@ void setAllServoDegrees(float degrees) {
   stopRobotMotion();
 
   degrees = constrain(degrees, 0, 180);
-  float ticks = factoryAngleToTicks(degrees);
 
   for (int i = 0; i < NUM_SERVOS; i++) {
-    servos[i].target = ticks;
+    servos[i].target = logicalDegreesToTicks(i, degrees);
     servos[i].velocity = 0.0;
     ensureServoEnabled(i);
     updateLegacyJointTelemetry(i, degrees);
@@ -442,24 +447,28 @@ ToolMode getToolMode() {
 }
 
 void setClawTicks(int ticks) {
+  setClawDegrees((float)ticks);
+}
+
+void setClawDegrees(float degrees) {
   if (estop) return;
 
-  servos[CLAW].target = clampFloat(ticks, servos[CLAW].minSafe, servos[CLAW].maxSafe);
-  ensureServoEnabled(CLAW);
+  setServoTargetFromLogicalDegrees(CLAW, degrees);
+  updateLegacyJointTelemetry(CLAW, degrees);
 }
 
 void clawOpen() {
-  setClawTicks(servos[CLAW].minSafe);
+  setClawDegrees(0.0);
   robotStatus = "Claw open";
 }
 
 void clawCloseSoft() {
-  setClawTicks(335);
+  setClawDegrees(GRIPPER_TIPS_TOUCH_DEG);
   robotStatus = "Claw soft close";
 }
 
 void clawCloseFirm() {
-  setClawTicks(servos[CLAW].maxSafe);
+  setClawDegrees(GRIPPER_TIPS_TOUCH_DEG);
   robotStatus = "Claw firm close";
 }
 
@@ -549,42 +558,30 @@ bool calculateIK() {
 
   float beta = acos(betaArg);
 
-  float shoulderRad = ELBOW_UP_SOLUTION ? alpha - beta : alpha + beta;
-
-  float forearmAbsRad = ELBOW_UP_SOLUTION
-    ? shoulderRad + (PI - elbowInternalRad)
-    : shoulderRad - (PI - elbowInternalRad);
+  float shoulderRad = alpha + beta;
+  float forearmAbsRad = shoulderRad - (PI - elbowInternalRad);
 
   float shoulderDeg = radToDeg(shoulderRad);
   float elbowInternalDeg = radToDeg(elbowInternalRad);
   float forearmAbsDeg = radToDeg(forearmAbsRad);
 
-  float bicepServoDeg = shoulderDeg;
-  float forearmServoDeg = 180.0 - elbowInternalDeg;
-
-  float wristServoDeg;
-
-  if (!INVERT_WRIST_COMPENSATION) {
-    wristServoDeg = WRIST_NEUTRAL_DEG + toolPitchDeg - forearmAbsDeg;
-  } else {
-    wristServoDeg = WRIST_NEUTRAL_DEG - toolPitchDeg + forearmAbsDeg;
-  }
+  float bicepServoDeg = 180.0 - shoulderDeg;
+  float forearmServoDeg = forearmAbsDeg + 90.0;
+  float wristServoDeg = toolPitchDeg - forearmAbsDeg + 90.0;
 
   baseServoDeg = constrain(baseServoDeg, 0, 180);
   bicepServoDeg = constrain(bicepServoDeg, 0, 180);
   forearmServoDeg = constrain(forearmServoDeg, 0, 180);
-
   wristServoDeg = constrain(wristServoDeg, 0, 180);
 
-  setServoTargetFromAngle(BASE, baseServoDeg, INVERT_BASE, BASE_OFFSET_DEG);
-  setServoTargetFromAngle(BICEP, bicepServoDeg, INVERT_BICEP, BICEP_OFFSET_DEG);
-  setServoTargetFromAngle(FOREARM, forearmServoDeg, INVERT_FOREARM, FOREARM_OFFSET_DEG);
-  setServoTargetFromAngle(WRIST, wristServoDeg, INVERT_WRIST, WRIST_OFFSET_DEG);
+  setServoTargetFromLogicalDegrees(BASE, baseServoDeg);
+  setServoTargetFromLogicalDegrees(BICEP, bicepServoDeg);
+  setServoTargetFromLogicalDegrees(FOREARM, forearmServoDeg);
+  setServoTargetFromLogicalDegrees(WRIST, wristServoDeg);
 
   lastBaseDeg = baseServoDeg;
   lastShoulderDeg = bicepServoDeg;
   lastElbowServoDeg = forearmServoDeg;
-  lastForearmAbsDeg = forearmAbsDeg;
   lastWristDeg = wristServoDeg;
 
   robotStatus = "Tool IK OK";
@@ -701,16 +698,16 @@ float getLastShoulderDeg() { return lastShoulderDeg; }
 float getLastElbowDeg() { return lastElbowServoDeg; }
 float getLastWristDeg() { return lastWristDeg; }
 
-int getClawTicks() { return roundedTicks(servos[CLAW].target); }
+int getClawTicks() { return roundedTicks(getServoTargetDegrees(CLAW)); }
 
 float getServoCurrentDegrees(int servoIndex) {
   if (servoIndex < 0 || servoIndex >= NUM_SERVOS) return 0.0;
-  return ticksToFactoryAngle(servos[servoIndex].current);
+  return ticksToLogicalDegrees(servoIndex, servos[servoIndex].current);
 }
 
 float getServoTargetDegrees(int servoIndex) {
   if (servoIndex < 0 || servoIndex >= NUM_SERVOS) return 0.0;
-  return ticksToFactoryAngle(servos[servoIndex].target);
+  return ticksToLogicalDegrees(servoIndex, servos[servoIndex].target);
 }
 
 int getServoCurrentTicks(int servoIndex) {

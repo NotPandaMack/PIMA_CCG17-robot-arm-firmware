@@ -318,7 +318,7 @@ async function updateStatus() {
       "Status: " + d.status + "<br>" +
       "Target: X " + d.x + " | Y " + d.y + " | Z " + d.z + " | Pitch " + d.pitch + "<br>" +
       "Joints: Base " + d.base + " | Shoulder " + d.shoulder + " | Elbow " + d.elbow + " | Wrist " + d.wrist + "<br>" +
-      "Claw Ticks: " + d.clawTicks + "<br>" +
+      "Gripper: " + d.clawTicks + " deg<br>" +
       "Timeline: " + d.timelineText + "<br>" +
       "Playing: " + d.timelinePlaying + " | ESTOP: " + d.estop;
   } catch(e) {
@@ -590,10 +590,10 @@ static void handleCommand(uint8_t clientNum, String msg) {
     return;
   }
 
-  // SET_CLAW:ticks
+  // SET_CLAW:degrees
   if (msg.startsWith("SET_CLAW:")) {
     stopTimeline();
-    setClawTicks(getCommandField(msg, 1).toInt());
+    setClawDegrees(getCommandField(msg, 1).toFloat());
     return;
   }
 

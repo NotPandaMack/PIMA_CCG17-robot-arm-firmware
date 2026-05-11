@@ -32,6 +32,7 @@ ToolMode getToolMode();
 void clawOpen();
 void clawCloseSoft();
 void clawCloseFirm();
+void setClawDegrees(float degrees);
 void setClawTicks(int ticks);
 
 void goHomePose();
