@@ -1,0 +1,108 @@
+{
+  "status": "calibrated",
+  "createdAt": "2026-05-11T00:00:00Z",
+  "camera": {
+    "width": 1280,
+    "height": 720
+  },
+  "origin": {
+    "pixel": {
+      "x": 640,
+      "y": 500
+    }
+  },
+  "pickupPitchDeg": -8.0,
+  "homography": [
+    [
+      1.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      1.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "points": [
+    {
+      "label": "front-left",
+      "pixel": {
+        "x": 120,
+        "y": 440
+      },
+      "robot": {
+        "x": -100.0,
+        "y": 120.0
+      }
+    },
+    {
+      "label": "front-right",
+      "pixel": {
+        "x": 520,
+        "y": 440
+      },
+      "robot": {
+        "x": 100.0,
+        "y": 120.0
+      }
+    },
+    {
+      "label": "back-left",
+      "pixel": {
+        "x": 130,
+        "y": 180
+      },
+      "robot": {
+        "x": -100.0,
+        "y": 240.0
+      }
+    },
+    {
+      "label": "back-right",
+      "pixel": {
+        "x": 510,
+        "y": 180
+      },
+      "robot": {
+        "x": 100.0,
+        "y": 240.0
+      }
+    }
+  ],
+  "reprojectionError": 0.0,
+  "tableZ": {
+    "method": "plane",
+    "points": [
+      {
+        "label": "center-near",
+        "x": 0.0,
+        "y": 120.0,
+        "z": 0.0
+      },
+      {
+        "label": "center-far",
+        "x": 0.0,
+        "y": 240.0,
+        "z": 0.0
+      },
+      {
+        "label": "left-mid",
+        "x": -100.0,
+        "y": 180.0,
+        "z": 0.0
+      },
+      {
+        "label": "right-mid",
+        "x": 100.0,
+        "y": 180.0,
+        "z": 0.0
+      }
+    ]
+  }
+}

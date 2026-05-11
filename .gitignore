@@ -14,3 +14,9 @@ build/
 # Temporary files
 *.tmp
 *.bak
+__pycache__/
+*.pyc
+
+# Local robot vision calibration/config
+config/vision_calibration.json
+config/vision_server_config.json

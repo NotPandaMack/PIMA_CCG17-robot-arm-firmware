@@ -1,0 +1,20 @@
+{
+  "espBaseUrl": "http://ESP8266_IP",
+  "motionEnabled": false,
+  "minConfidence": 0.75,
+  "staleTimeoutSec": 2.0,
+  "safeHoverZ": 80.0,
+  "grabOffsetZ": 10.0,
+  "liftZ": 100.0,
+  "closeClawDegrees": 55,
+  "moveDurationMs": 1200,
+  "grabWaitAfterMs": 850,
+  "workspace": {
+    "xMin": -180.0,
+    "xMax": 180.0,
+    "yMin": 60.0,
+    "yMax": 285.0,
+    "zMin": 0.0,
+    "zMax": 220.0
+  }
+}
