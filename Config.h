@@ -22,12 +22,12 @@ static const char WIFI_PASSWORD[] = "WIFI_PASSWORD";
 // Servo Signal Settings
 // ======================================================
 // Approx at 50 Hz:
-// 195 ≈ 950 us
+// 102 ≈ 500 us
 // 307 ≈ 1500 us
-// 420 ≈ 2050 us
-static const int SERVO_MIN = 195;
+// 512 ≈ 2500 us
+static const int SERVO_MIN = 102;
 static const int SERVO_MID = 307;
-static const int SERVO_MAX = 420;
+static const int SERVO_MAX = 512;
 
 #define NUM_SERVOS 5
 
