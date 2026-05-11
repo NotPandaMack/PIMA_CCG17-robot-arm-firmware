@@ -12,7 +12,7 @@ from .calibration import (
     reset_calibration,
     save_calibration,
 )
-from .config import load_config
+from .config import config_to_dict, load_config, update_config
 from .esp_client import EspClient
 from .planner import build_pick_plan, execute_plan
 from .store import TargetStore
@@ -37,6 +37,22 @@ app.add_middleware(
 @app.get("/health")
 def health() -> dict[str, Any]:
     return {"ok": True}
+
+
+@app.get("/vision/config")
+def get_config() -> dict[str, Any]:
+    return {"ok": True, "config": config_to_dict(load_config())}
+
+
+@app.put("/vision/config")
+async def put_config(request: Request) -> dict[str, Any]:
+    payload = await request.json()
+    try:
+        config = update_config(payload)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    logger.warning("Updated vision server config")
+    return {"ok": True, "config": config_to_dict(config)}
 
 
 @app.post("/vision/target")
@@ -118,4 +134,3 @@ def reset() -> dict[str, Any]:
 def esp_status() -> dict[str, Any]:
     config = load_config()
     return EspClient(config.esp_base_url).get_status()
-
