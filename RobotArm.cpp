@@ -558,8 +558,8 @@ bool calculateIK() {
 
   float beta = acos(betaArg);
 
-  float shoulderRad = alpha + beta;
-  float forearmAbsRad = shoulderRad - (PI - elbowInternalRad);
+  float shoulderRad = alpha - beta;
+  float forearmAbsRad = shoulderRad + (PI - elbowInternalRad);
 
   float shoulderDeg = radToDeg(shoulderRad);
   float elbowInternalDeg = radToDeg(elbowInternalRad);
