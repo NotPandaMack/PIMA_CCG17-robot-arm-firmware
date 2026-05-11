@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QMouseEvent, QPixmap
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QFormLayout,
@@ -17,10 +17,12 @@ from PySide6.QtWidgets import (
 )
 
 from ..detection_worker import HSVProfile
+from ..geometry import map_widget_point_to_frame
 
 
 class CameraView(QLabel):
     clicked = Signal(int, int)
+    mapped_clicked = Signal(object)
 
     def __init__(self) -> None:
         super().__init__("Camera stopped")
@@ -29,23 +31,121 @@ class CameraView(QLabel):
         self.setMinimumSize(640, 360)
         self.setScaledContents(False)
         self._frame_size: tuple[int, int] | None = None
+        self._source_pixmap: QPixmap | None = None
+        self._marker: dict | None = None
+        self._grid_enabled = False
+        self._grid_homography: list[list[float]] | None = None
+        self._grid_workspace: dict | None = None
 
     def set_frame(self, pixmap: QPixmap, frame_size: tuple[int, int]) -> None:
         self._frame_size = frame_size
-        self.setPixmap(pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self._source_pixmap = pixmap
+        self._render_scaled()
+
+    def set_marker(self, pixel_x: int | None, pixel_y: int | None, text: str = "") -> None:
+        self._marker = None if pixel_x is None or pixel_y is None else {"x": int(pixel_x), "y": int(pixel_y), "text": text}
+        self._render_scaled()
+
+    def set_grid_overlay(self, enabled: bool, homography: list[list[float]] | None = None, workspace: dict | None = None) -> None:
+        self._grid_enabled = enabled
+        self._grid_homography = homography
+        self._grid_workspace = workspace
+        self._render_scaled()
+
+    def resizeEvent(self, event: object) -> None:
+        super().resizeEvent(event)
+        self._render_scaled()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        if self.pixmap() is None or self._frame_size is None:
-            return
-        pixmap = self.pixmap()
-        x_offset = max(0, (self.width() - pixmap.width()) // 2)
-        y_offset = max(0, (self.height() - pixmap.height()) // 2)
-        x = event.position().x() - x_offset
-        y = event.position().y() - y_offset
-        if x < 0 or y < 0 or x > pixmap.width() or y > pixmap.height():
+        if self._frame_size is None:
             return
         frame_w, frame_h = self._frame_size
-        self.clicked.emit(int(x / max(1, pixmap.width()) * frame_w), int(y / max(1, pixmap.height()) * frame_h))
+        mapped = map_widget_point_to_frame(
+            widget_width=self.width(),
+            widget_height=self.height(),
+            frame_width=frame_w,
+            frame_height=frame_h,
+            widget_x=event.position().x(),
+            widget_y=event.position().y(),
+        )
+        if mapped is None:
+            return
+        self.clicked.emit(mapped["pixelX"], mapped["pixelY"])
+        self.mapped_clicked.emit(mapped)
+
+    def _render_scaled(self) -> None:
+        if self._source_pixmap is None or self._frame_size is None or self.width() <= 0 or self.height() <= 0:
+            return
+        scaled = self._source_pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        painter = QPainter(scaled)
+        display_rect = QRectF(0, 0, scaled.width(), scaled.height())
+        if self._grid_enabled and self._grid_homography and self._grid_workspace:
+            self._draw_grid(painter, display_rect)
+        if self._marker:
+            self._draw_marker(painter, display_rect)
+        painter.end()
+        self.setPixmap(scaled)
+
+    def _frame_to_display(self, pixel_x: float, pixel_y: float, display_rect: QRectF) -> QPointF:
+        frame_w, frame_h = self._frame_size or (1, 1)
+        return QPointF((pixel_x / frame_w) * display_rect.width(), (pixel_y / frame_h) * display_rect.height())
+
+    def _draw_marker(self, painter: QPainter, display_rect: QRectF) -> None:
+        point = self._frame_to_display(self._marker["x"], self._marker["y"], display_rect)
+        pen = QPen(QColor("#ff4d5e"), 3)
+        painter.setPen(pen)
+        painter.drawLine(QPointF(point.x() - 12, point.y()), QPointF(point.x() + 12, point.y()))
+        painter.drawLine(QPointF(point.x(), point.y() - 12), QPointF(point.x(), point.y() + 12))
+        painter.drawEllipse(point, 7, 7)
+        text = self._marker.get("text", "")
+        if text:
+            painter.setPen(QPen(QColor("#ffffff"), 1))
+            painter.drawText(QPointF(min(point.x() + 14, display_rect.width() - 260), max(20, point.y() - 14)), text)
+
+    def _draw_grid(self, painter: QPainter, display_rect: QRectF) -> None:
+        points = self._grid_points()
+        if not points:
+            return
+        painter.setPen(QPen(QColor(100, 180, 255, 150), 1))
+        for pixel_x, pixel_y, label in points:
+            point = self._frame_to_display(pixel_x, pixel_y, display_rect)
+            painter.drawEllipse(point, 2, 2)
+            painter.drawText(QPointF(point.x() + 4, point.y() - 4), label)
+
+    def _grid_points(self) -> list[tuple[float, float, str]]:
+        try:
+            import numpy as np
+
+            h = np.array(self._grid_homography, dtype=float)
+            inv = np.linalg.inv(h)
+            bounds = self._grid_workspace or {}
+            xs = _grid_values(float(bounds.get("xMin", -180.0)), float(bounds.get("xMax", 180.0)), 60.0)
+            ys = _grid_values(float(bounds.get("yMin", 60.0)), float(bounds.get("yMax", 285.0)), 60.0)
+            frame_w, frame_h = self._frame_size or (0, 0)
+            points = []
+            for robot_x in xs:
+                for robot_y in ys:
+                    denom = (inv[2][0] * robot_x) + (inv[2][1] * robot_y) + inv[2][2]
+                    if abs(denom) < 1e-9:
+                        continue
+                    pixel_x = ((inv[0][0] * robot_x) + (inv[0][1] * robot_y) + inv[0][2]) / denom
+                    pixel_y = ((inv[1][0] * robot_x) + (inv[1][1] * robot_y) + inv[1][2]) / denom
+                    if 0 <= pixel_x < frame_w and 0 <= pixel_y < frame_h:
+                        points.append((float(pixel_x), float(pixel_y), f"{robot_x:.0f},{robot_y:.0f}"))
+            return points
+        except Exception:
+            return []
+
+
+def _grid_values(minimum: float, maximum: float, step: float) -> list[float]:
+    values = []
+    current = minimum
+    while current <= maximum + 1e-6:
+        values.append(current)
+        current += step
+    if values and abs(values[-1] - maximum) > 1e-6:
+        values.append(maximum)
+    return values
 
 
 class CameraPage(QWidget):

@@ -243,7 +243,8 @@ class MainWindow(QMainWindow):
         self.camera_page.continuous_changed.connect(self.set_continuous_send)
         self.camera_page.rate_changed.connect(self.set_send_rate)
 
-        self.calibration_page.camera_view.clicked.connect(self.handle_calibration_click)
+        self.calibration_page.camera_view.mapped_clicked.connect(self.handle_calibration_click)
+        self.calibration_page.grid_overlay_changed.connect(self.update_calibration_grid_overlay)
         self.calibration_page.save_touch_requested.connect(self.save_table_touch_point)
         self.calibration_page.save_pickup_requested.connect(self.save_pickup_pose_from_esp)
         self.calibration_page.save_step_requested.connect(self.save_calibration_step)
@@ -621,12 +622,25 @@ class MainWindow(QMainWindow):
     def set_send_rate(self, value: float) -> None:
         self.settings["sendRateHz"] = value
 
-    def handle_calibration_click(self, x: int, y: int) -> None:
-        self.calibration_page.capture_click(x, y)
+    def handle_calibration_click(self, mapped: dict[str, Any]) -> None:
+        x = int(mapped["pixelX"])
+        y = int(mapped["pixelY"])
+        self.calibration_page.capture_click(x, y, mapped)
         if self.calibration_page.step_index == 6:
             robot_xy = convert_pixel(self.calibration, x, y)
             if robot_xy:
-                self.calibration_page.set_validation_result(f"Robot coordinate: X {robot_xy[0]:.1f} mm, Y {robot_xy[1]:.1f} mm")
+                marker_text = (
+                    f"widget=({mapped.get('widgetX', 0):.0f},{mapped.get('widgetY', 0):.0f}) "
+                    f"pixel=({x},{y}) robot=({robot_xy[0]:.1f},{robot_xy[1]:.1f})"
+                )
+                self.calibration_page.camera_view.set_marker(x, y, marker_text)
+                self.calibration_page.set_validation_result(
+                    "Visual test mode\n"
+                    f"pixelX/pixelY: {x}, {y}\n"
+                    f"robotX/robotY: {robot_xy[0]:.1f}, {robot_xy[1]:.1f}\n"
+                    f"raw widget click: {mapped.get('widgetX', 0):.1f}, {mapped.get('widgetY', 0):.1f}\n"
+                    f"displayed image click: {mapped.get('displayX', 0):.1f}, {mapped.get('displayY', 0):.1f}"
+                )
                 payload = {
                     "type": "object_detected",
                     "object": "calibration_validation",
@@ -644,7 +658,15 @@ class MainWindow(QMainWindow):
 
                 self._run_background(task, lambda _result: self.log("Calibration validation target sent to Pi."), "Validation target could not be sent")
             else:
+                self.calibration_page.camera_view.set_marker(x, y, f"px=({x},{y})")
                 self.calibration_page.set_validation_result("Conversion unavailable. Complete camera mapping first.")
+
+    def update_calibration_grid_overlay(self, enabled: bool) -> None:
+        self.calibration_page.camera_view.set_grid_overlay(
+            enabled,
+            self.calibration.get("homography") if has_homography(self.calibration) else None,
+            self.calibration.get("workspaceBounds", self.settings.get("workspace", {})),
+        )
 
     def save_calibration_step(self) -> None:
         step = self.calibration_page.step_index
@@ -1001,6 +1023,8 @@ class MainWindow(QMainWindow):
         self.health_pills["calibration"].set_state("Calibrated" if calibrated else "Not calibrated", "green" if calibrated else "red")
         self.health_pills["motion"].set_state("Motion enabled" if state.motion_enabled else "Motion disabled", "green" if state.motion_enabled else "yellow")
         self.health_pills["target"].set_state(f"Target {self.last_target_status}", "green" if state.target_valid else "yellow")
+        if self.calibration_page.grid_overlay.isChecked():
+            self.update_calibration_grid_overlay(True)
         if not self.pi_tested:
             self.connection_page.pi_status.set_state("Pi not tested", "yellow")
             self.health_pills["pi"].set_state("Pi not tested", "yellow")

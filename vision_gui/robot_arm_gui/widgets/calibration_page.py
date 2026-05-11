@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
@@ -49,6 +50,7 @@ class CalibrationPage(QWidget):
     preview_hover_requested = Signal()
     test_hover_requested = Signal()
     finish_requested = Signal()
+    grid_overlay_changed = Signal(bool)
 
     def __init__(self) -> None:
         super().__init__()
@@ -70,10 +72,12 @@ class CalibrationPage(QWidget):
         self.instructions.setWordWrap(True)
         self.progress = QProgressBar()
         self.progress.setRange(0, len(CALIBRATION_STEPS))
+        self.grid_overlay = QCheckBox("Show calibration grid overlay")
         self.camera_view = CameraView()
         left_layout.addWidget(self.title)
         left_layout.addWidget(self.instructions)
         left_layout.addWidget(self.progress)
+        left_layout.addWidget(self.grid_overlay)
         left_layout.addWidget(self.camera_view, 1)
         layout.addWidget(left, 0, 0)
 
@@ -107,6 +111,7 @@ class CalibrationPage(QWidget):
         self.back_button.clicked.connect(lambda: self.set_step(max(0, self.step_index - 1)))
         self.next_button.clicked.connect(lambda: self.set_step(min(len(CALIBRATION_STEPS) - 1, self.step_index + 1)))
         self.save_step_button.clicked.connect(self.save_step_requested.emit)
+        self.grid_overlay.toggled.connect(self.grid_overlay_changed.emit)
         self.set_step(0)
 
     def set_step(self, index: int) -> None:
@@ -120,7 +125,7 @@ class CalibrationPage(QWidget):
         self.next_button.setEnabled(self.step_index < len(CALIBRATION_STEPS) - 1)
         self.step_changed.emit(self.step_index)
 
-    def capture_click(self, x: int, y: int) -> None:
+    def capture_click(self, x: int, y: int, debug: dict | None = None) -> None:
         if self.step_index == 1:
             self.origin_pixel = (x, y)
             self.origin_label.setText(f"Origin pixel: {x}, {y}")
@@ -130,7 +135,14 @@ class CalibrationPage(QWidget):
             self.marker_pixel_labels[label].setText(f"{x}, {y}")
         elif self.step_index == 6:
             self.validation_pixel = (x, y)
-            self.validation_label.setText(f"Clicked pixel: {x}, {y}")
+            if debug:
+                self.validation_label.setText(
+                    f"Widget click: {debug.get('widgetX', 0):.1f}, {debug.get('widgetY', 0):.1f}\n"
+                    f"Corrected image pixel: {x}, {y}\n"
+                    f"Displayed-image position: {debug.get('displayX', 0):.1f}, {debug.get('displayY', 0):.1f}"
+                )
+            else:
+                self.validation_label.setText(f"Clicked pixel: {x}, {y}")
 
     def current_marker_label(self) -> str:
         return MAPPING_DEFAULTS[self.current_marker.value()][0]
@@ -285,6 +297,7 @@ class CalibrationPage(QWidget):
         page = QWidget()
         layout = QVBoxLayout(page)
         self.validation_label = QLabel("Clicked pixel: none")
+        self.validation_label.setWordWrap(True)
         self.validation_result = QLabel("Conversion result: none")
         self.validation_result.setWordWrap(True)
         preview = QPushButton("Preview Hover")
