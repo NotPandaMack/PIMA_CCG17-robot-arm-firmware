@@ -141,6 +141,7 @@ static const char index_html[] PROGMEM = R"rawhtml(
 
     <button class="neutral" style="width:100%;margin-top:8px;" onclick="send('STOP')">Stop / Cancel</button>
     <button class="neutral" style="width:100%;margin-top:8px;" onclick="send('ALL_OFF')">All Servos Off</button>
+    <button class="danger" style="width:100%;margin-top:8px;" onclick="confirmCalibration()">Calibrate Zero</button>
   </div>
 
   <div class="panel">
@@ -226,6 +227,14 @@ function connectWS() {
 function send(msg) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(msg);
+  }
+}
+
+function confirmCalibration() {
+  alert("warning all servos are about to be set to 0 degrees, make sure arms are detatched before doing so");
+  const answer = prompt('Type "confirm" to set every servo to 0 degrees.');
+  if (answer === "confirm") {
+    send("CALIBRATE_ZERO");
   }
 }
 
@@ -421,6 +430,11 @@ static void handleCommand(uint8_t clientNum, String msg) {
     allServosOff();
     stopRobotMotion();
     stopTimeline();
+    return;
+  }
+
+  if (msg == "CALIBRATE_ZERO") {
+    calibrateServosZeroDegrees();
     return;
   }
 

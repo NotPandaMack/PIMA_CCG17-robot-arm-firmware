@@ -59,28 +59,29 @@ static const float Z_OFFSET_MM = 140.0;
 // ======================================================
 // Wrist Safety
 // ======================================================
-// Prevents claw body from crashing into wrist joint.
+// Wide-open for calibration and expanded testing.
+// Re-tighten before autonomous operation near hard stops or mounted fixtures.
 static const float WRIST_MIN_SAFE_DEG = 0.0;
-static const float WRIST_MAX_UP_SAFE_DEG = 108.0;
+static const float WRIST_MAX_UP_SAFE_DEG = 180.0;
 
 // ======================================================
 // Workspace
 // ======================================================
-// Expanded about 30% from the earlier conservative workspace.
-// Physical reach is still protected by IK reach clamping.
-static const float TARGET_X_MIN = -247.0;
-static const float TARGET_X_MAX = 247.0;
+// Wide-open software workspace for calibration.
+// Physical reach is still limited by IK geometry and servo angle clamps.
+static const float TARGET_X_MIN = -500.0;
+static const float TARGET_X_MAX = 500.0;
 
-static const float TARGET_Y_MIN = 45.0;
-static const float TARGET_Y_MAX = 351.0;
+static const float TARGET_Y_MIN = -500.0;
+static const float TARGET_Y_MAX = 500.0;
 
-static const float TARGET_Z_MIN = 3.0;
-static const float TARGET_Z_MAX = 318.0;
+static const float TARGET_Z_MIN = -250.0;
+static const float TARGET_Z_MAX = 500.0;
 
-static const float TOOL_PITCH_MIN = -65.0;
-static const float TOOL_PITCH_MAX = 65.0;
+static const float TOOL_PITCH_MIN = -180.0;
+static const float TOOL_PITCH_MAX = 180.0;
 
-static const float REACH_MARGIN_MM = 7.0;
+static const float REACH_MARGIN_MM = 0.0;
 
 static const float TABLE_SKIM_Z_MM = 20.0;
 

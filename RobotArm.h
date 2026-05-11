@@ -19,6 +19,7 @@ void updateRobotArm();
 
 void stopRobotMotion();
 void allServosOff();
+void calibrateServosZeroDegrees();
 
 void setTarget(float x, float y, float z, float pitch);
 void moveTargetRelative(float dx, float dy, float dz, float dp);

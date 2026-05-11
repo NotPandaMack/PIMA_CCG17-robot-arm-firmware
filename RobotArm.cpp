@@ -46,7 +46,7 @@ static ServoState servos[NUM_SERVOS] = {
   { SERVO_MID, SERVO_MID, 0.0, false, 195, 420 }, // Bicep
   { SERVO_MID, SERVO_MID, 0.0, false, 195, 420 }, // Forearm
   { SERVO_MID, SERVO_MID, 0.0, false, 195, 420 }, // Wrist
-  { SERVO_MID, SERVO_MID, 0.0, false, 220, 390 }  // Claw
+  { SERVO_MID, SERVO_MID, 0.0, false, 195, 420 }  // Claw
 };
 
 static int lastWritten[NUM_SERVOS] = { -1, -1, -1, -1, -1 };
@@ -322,6 +322,35 @@ void allServosOff() {
   for (int i = 0; i < NUM_SERVOS; i++) {
     disableServo(i);
   }
+}
+
+void calibrateServosZeroDegrees() {
+  stopTimeline();
+  stopRobotMotion();
+
+  estop = false;
+
+  for (int i = 0; i < NUM_SERVOS; i++) {
+    servos[i].current = SERVO_MIN;
+    servos[i].target = SERVO_MIN;
+    servos[i].velocity = 0.0;
+    servos[i].enabled = true;
+
+    pwm.setPWM(SERVO_CHANNELS[i], 0, SERVO_MIN);
+    lastWritten[i] = SERVO_MIN;
+  }
+
+  targetX = 0.0;
+  targetY = 170.0;
+  targetZ = 80.0;
+  toolPitchDeg = 0.0;
+
+  lastBaseDeg = 0.0;
+  lastShoulderDeg = 0.0;
+  lastElbowServoDeg = 0.0;
+  lastWristDeg = 0.0;
+
+  robotStatus = "Calibration: all servos set to 0 degrees";
 }
 
 void setTarget(float x, float y, float z, float pitch) {
