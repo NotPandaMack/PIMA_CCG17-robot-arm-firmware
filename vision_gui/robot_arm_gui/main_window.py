@@ -747,40 +747,107 @@ class MainWindow(QMainWindow):
 
     def save_table_touch_point(self, label: str) -> None:
         esp_url = self.settings["espUrl"]
+        website_url = self.settings.get("websiteUrl", self.settings["piUrl"])
         fake = bool(self.settings.get("fakeEsp"))
 
         def task() -> dict[str, Any]:
-            return EspClient(esp_url, fake=fake).status()
+            status: dict[str, Any] = {}
+            try:
+                status = EspClient(esp_url, fake=fake).status()
+            except Exception:
+                status = {}
+            try:
+                manual_response = WebsiteClient(website_url, mock=bool(self.settings.get("mockPi"))).get_manual_control_state()
+                manual_state = manual_response.get("state") if manual_response.get("hasState") else None
+            except Exception:
+                manual_state = None
+            return self._calibration_capture_pose(status, manual_state)
 
         def on_result(status: dict[str, Any]) -> None:
-            self.last_esp_status = status
-            self.esp_connected = True
+            if status.get("espStatus"):
+                self.last_esp_status = status["espStatus"]
+                self.esp_connected = True
             self.calibration_page.add_table_point(label, status)
             self.calibration["tableZ"] = self.calibration_page.table_z()
-            self.log(f"Saved table touch point: {label}.")
+            self.log(f"Saved table touch point: {label} from {status.get('source', 'unknown source')}.")
             self.update_ui_state()
 
         self._run_background(task, on_result, "Touch point not saved")
 
     def save_pickup_pose_from_esp(self) -> None:
         esp_url = self.settings["espUrl"]
+        website_url = self.settings.get("websiteUrl", self.settings["piUrl"])
         fake = bool(self.settings.get("fakeEsp"))
 
         def task() -> dict[str, Any]:
-            return EspClient(esp_url, fake=fake).status()
+            status: dict[str, Any] = {}
+            try:
+                status = EspClient(esp_url, fake=fake).status()
+            except Exception:
+                status = {}
+            try:
+                manual_response = WebsiteClient(website_url, mock=bool(self.settings.get("mockPi"))).get_manual_control_state()
+                manual_state = manual_response.get("state") if manual_response.get("hasState") else None
+            except Exception:
+                manual_state = None
+            return self._calibration_capture_pose(status, manual_state)
 
         def on_result(status: dict[str, Any]) -> None:
-            self.last_esp_status = status
-            self.esp_connected = True
+            if status.get("espStatus"):
+                self.last_esp_status = status["espStatus"]
+                self.esp_connected = True
             if "pitch" not in status or "z" not in status:
                 self.log("Pickup pose blocked: ESP status does not include pitch and Z.")
                 return
             self.calibration_page.set_pickup_from_status(status)
+            self.calibration_page.set_pickup_source_status(f"Saved pickup pose from {status.get('source', 'unknown source')}.")
             self.calibration.update(self.calibration_page.pickup_values())
-            self.log("Pickup pose captured from ESP status.")
+            self.calibration["pickupPoseSource"] = status.get("source")
+            self.calibration["pickupPoseManualControlState"] = status.get("manualControlState")
+            self.calibration["pickupPoseEspStatus"] = status.get("espStatus")
+            self.log(f"Pickup pose captured from {status.get('source', 'unknown source')}.")
             self.update_ui_state()
 
         self._run_background(task, on_result, "Pickup pose not saved")
+
+    def _calibration_capture_pose(self, esp_status: dict[str, Any], manual_state: dict[str, Any] | None) -> dict[str, Any]:
+        pose: dict[str, Any] = {}
+        source = "ESP pose"
+        if self._has_numeric_pose(esp_status):
+            pose = {
+                "x": float(esp_status["x"]),
+                "y": float(esp_status["y"]),
+                "z": float(esp_status["z"]),
+                "pitch": float(esp_status.get("pitch", 0.0)),
+            }
+        else:
+            ik_draft = manual_state.get("ikDraft") if isinstance(manual_state, dict) else None
+            if not self._has_numeric_pose(ik_draft):
+                raise RuntimeError("no valid ESP pose or website IK draft is available")
+            pose = {
+                "x": float(ik_draft["x"]),
+                "y": float(ik_draft["y"]),
+                "z": float(ik_draft["z"]),
+                "pitch": float(ik_draft.get("pitch", 0.0)),
+            }
+            source = f"website {manual_state.get('source', 'manual control')} IK draft + servo snapshot"
+        pose["source"] = source
+        pose["manualControlState"] = manual_state
+        pose["espStatus"] = esp_status
+        if manual_state and manual_state.get("clawTicks") is not None:
+            pose["clawTicks"] = manual_state["clawTicks"]
+        elif esp_status.get("clawTicks") is not None:
+            pose["clawTicks"] = esp_status["clawTicks"]
+        return pose
+
+    @staticmethod
+    def _has_numeric_pose(status: Any) -> bool:
+        if not isinstance(status, dict):
+            return False
+        for key in ("x", "y", "z"):
+            if not isinstance(status.get(key), (int, float)):
+                return False
+        return True
 
     def finish_calibration(self) -> None:
         if not self.last_frame_size:

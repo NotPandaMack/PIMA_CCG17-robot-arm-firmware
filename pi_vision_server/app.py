@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Robot Arm Vision Bridge")
 store = TargetStore()
 website_vision_store = TargetStore()
+manual_control_store = TargetStore()
 
 app.add_middleware(
     CORSMiddleware,
@@ -131,6 +132,27 @@ def clear_website_vision_target() -> dict[str, Any]:
     website_vision_store.clear()
     logger.info("Website vision target cleared")
     return {"ok": True, "hasTarget": False}
+
+
+@app.post("/api/manual-control-state")
+async def post_manual_control_state(request: Request) -> dict[str, Any]:
+    try:
+        payload = await request.json()
+    except Exception as error:
+        raise HTTPException(status_code=400, detail="invalid JSON payload") from error
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be a JSON object")
+    stored = manual_control_store.set(payload)
+    logger.info("Received manual control state source=%s command=%s", stored.get("source"), stored.get("command"))
+    return {"ok": True, "state": stored}
+
+
+@app.get("/api/manual-control-state")
+def get_manual_control_state() -> dict[str, Any]:
+    state = manual_control_store.get()
+    if state is None:
+        return {"hasState": False, "state": None}
+    return {"hasState": True, "state": state}
 
 
 @app.post("/vision/pick/preview")

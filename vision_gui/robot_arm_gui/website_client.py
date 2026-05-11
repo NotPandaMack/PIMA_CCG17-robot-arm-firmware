@@ -36,3 +36,13 @@ class WebsiteClient:
         if not isinstance(data, dict):
             raise RuntimeError("website returned non-object JSON")
         return data
+
+    def get_manual_control_state(self) -> dict[str, Any]:
+        if self.mock:
+            return {"hasState": False, "state": None}
+        response = requests.get(f"{self.base_url}/api/manual-control-state", timeout=0.3)
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict):
+            raise RuntimeError("website returned non-object JSON")
+        return data

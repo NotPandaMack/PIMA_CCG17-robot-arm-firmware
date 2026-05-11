@@ -26,8 +26,8 @@ CALIBRATION_STEPS = [
     ("Define Robot Origin", "Click the robot base center projected onto the table. This becomes robot coordinate X=0, Y=0."),
     ("Four-Point Table Mapping", "Place each marker, enter its real robot/table X/Y coordinate in millimeters, then click it in the camera image."),
     ("Workspace Bounds", "These safety limits stop the robot from accepting targets outside the reachable box."),
-    ("Table Z Calibration", "Manually jog the claw/tip until it barely touches the table, then save the current ESP pose. The GUI never lowers the arm automatically."),
-    ("Pickup Pose", "Manually move the arm to a good pickup pose near the table, then save the current ESP pose and claw values."),
+    ("Table Z Calibration", "Use the website controls to move the claw/tip until it barely touches the table, then save the current control/ESP pose here. The GUI never lowers the arm automatically."),
+    ("Pickup Pose", "Use the website 2D IK simulator or Specific Joint Adjustment to make a good pickup pose, then save the current control/ESP pose and claw values."),
     ("Calibration Validation", "Click a table point. The app converts it to robot coordinates and can generate a hover preview."),
     ("Finish Calibration", "Save calibration locally and upload it to the Pi server."),
 ]
@@ -181,6 +181,9 @@ class CalibrationPage(QWidget):
         self.skim_z.setValue(float(status.get("z", self.skim_z.value())))
         self.claw_closed.setValue(float(status.get("clawTicks", self.claw_closed.value())))
 
+    def set_pickup_source_status(self, text: str) -> None:
+        self.pickup_source_status.setText(text)
+
     def add_table_point(self, label: str, status: dict) -> None:
         point = {
             "label": label,
@@ -188,9 +191,18 @@ class CalibrationPage(QWidget):
             "y": float(status.get("y", 0.0)),
             "z": float(status.get("z", 0.0)),
         }
+        if status.get("pitch") is not None:
+            point["pitch"] = float(status["pitch"])
+        if status.get("source"):
+            point["source"] = status["source"]
+        if status.get("manualControlState"):
+            point["manualControlState"] = status["manualControlState"]
+        if status.get("espStatus"):
+            point["espStatus"] = status["espStatus"]
         self.table_points = [existing for existing in self.table_points if existing["label"] != label]
         self.table_points.append(point)
         self.table_status.setText("\n".join(f"{p['label']}: X {p['x']:.1f}, Y {p['y']:.1f}, Z {p['z']:.1f}" for p in self.table_points))
+        self.table_source_status.setText(f"Saved {label} from {status.get('source', 'unknown source')}.")
 
     def table_z(self) -> dict:
         if len(self.table_points) >= 3:
@@ -266,8 +278,11 @@ class CalibrationPage(QWidget):
         button.clicked.connect(lambda: self.save_touch_requested.emit(TABLE_POINTS[self.table_point_index.value()]))
         self.table_status = QLabel("No touch points saved.")
         self.table_status.setWordWrap(True)
+        self.table_source_status = QLabel("Move from the website first, then save. Source details will appear here.")
+        self.table_source_status.setWordWrap(True)
         layout.addWidget(button)
         layout.addWidget(self.table_status)
+        layout.addWidget(self.table_source_status)
         layout.addStretch(1)
         return page
 
@@ -290,7 +305,10 @@ class CalibrationPage(QWidget):
         form.addRow("Claw closed value", self.claw_closed)
         button = QPushButton("Save Pickup Pose From ESP")
         button.clicked.connect(self.save_pickup_requested.emit)
+        self.pickup_source_status = QLabel("Move from the website first, then save. The saved source will appear here.")
+        self.pickup_source_status.setWordWrap(True)
         form.addRow(button)
+        form.addRow(self.pickup_source_status)
         return page
 
     def _validation_step(self) -> QWidget:
