@@ -38,6 +38,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "mockPi": False,
     "fakeEsp": False,
     "previewOnlyMode": True,
+    "movementAdapterDryRun": True,
     "autoPickEnabled": False,
     "autoPickStableSec": 2.0,
     "autoPickCooldownSec": 8.0,

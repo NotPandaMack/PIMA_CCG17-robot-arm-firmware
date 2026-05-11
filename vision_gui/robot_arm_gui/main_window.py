@@ -38,6 +38,7 @@ from .config import DEFAULT_HSV_PROFILE, DEFAULT_SETTINGS, load_settings, normal
 from .detection_worker import DetectionResult, HSVProfile
 from .esp_client import EspClient
 from .pi_client import PiClient
+from .robot_motion_adapter import RobotMotionAdapter
 from .workers import TaskWorker
 from .widgets.autonomous_page import AutonomousPage
 from .widgets.calibration_page import CalibrationPage
@@ -253,8 +254,10 @@ class MainWindow(QMainWindow):
         self.calibration_page.finish_requested.connect(self.finish_calibration)
 
         self.test_page.command_requested.connect(self.send_esp_command)
+        self.test_page.jog_requested.connect(self.send_safe_jog)
         self.test_page.refresh_requested.connect(self.refresh_status)
         self.test_page.enable_motion_requested.connect(self.enable_motion)
+        self.test_page.dry_run_changed.connect(self.set_movement_adapter_dry_run)
 
         self.autonomous_page.preview_requested.connect(self.generate_preview)
         self.autonomous_page.pick_requested.connect(self.run_pick)
@@ -266,6 +269,7 @@ class MainWindow(QMainWindow):
         self.camera_page.set_profile(profile)
         self.camera_page.continuous.setChecked(bool(self.settings.get("continuousSend", False)))
         self.camera_page.rate.setValue(int(float(self.settings.get("sendRateHz", 5.0))))
+        self.test_page.set_dry_run(bool(self.settings.get("movementAdapterDryRun", True)))
 
     def _start_nonblocking_timers(self) -> None:
         self.auto_pick_timer = QTimer(self)
@@ -894,24 +898,88 @@ class MainWindow(QMainWindow):
 
         self._run_background(task, on_result, "Motion enable failed")
 
+    def set_movement_adapter_dry_run(self, enabled: bool) -> None:
+        self.settings["movementAdapterDryRun"] = enabled
+        save_settings(self.settings)
+        self.log("Movement adapter dry-run enabled." if enabled else "Movement adapter dry-run disabled.")
+
+    def _movement_adapter(self, client: EspClient) -> RobotMotionAdapter:
+        return RobotMotionAdapter(
+            client,
+            dry_run=bool(self.settings.get("movementAdapterDryRun", True)),
+            logger=self.log,
+        )
+
     def send_esp_command(self, command: str) -> None:
         if command not in {"STOP", "ESTOP", "CLEAR_ESTOP", "CLEAR_TIMELINE"} and not self.esp_connected and not self.settings.get("fakeEsp"):
             self.log(f"Command not sent: ESP is not connected ({command}).")
             return
         esp_url = self.settings["espUrl"]
         fake = bool(self.settings.get("fakeEsp"))
+        dry_run = bool(self.settings.get("movementAdapterDryRun", True))
 
         def task() -> dict[str, Any]:
             client = EspClient(esp_url, fake=fake)
-            result = client.send_command(command)
-            status = client.status()
-            return {"result": result, "status": status}
+            adapter = RobotMotionAdapter(client, dry_run=dry_run, logger=lambda message: None)
+            result = adapter.send_web_command(command)
+            return {"result": result, "status": result.status, "command": result.command, "sent": result.sent}
 
         def on_result(result: dict[str, Any]) -> None:
-            self.log(f"ESP command sent: {command}")
-            self._on_esp_status_result(result.get("status", {}))
+            self.log(f"PyGUI sending same as web UI: {result['command']}")
+            if not result.get("sent"):
+                self.log(f"Movement adapter dry-run: not sent: {result['command']}")
+            else:
+                self.log(f"ESP command sent: {result['command']}")
+                self._on_esp_status_result(result.get("status", {}))
 
         self._run_background(task, on_result, "ESP command failed")
+
+    def send_safe_jog(self, axis: str, direction: int) -> None:
+        if not self.esp_connected and not self.settings.get("fakeEsp"):
+            self.log("Jog refused: ESP is not connected. Refresh or test ESP status first.")
+            return
+        esp_url = self.settings["espUrl"]
+        fake = bool(self.settings.get("fakeEsp"))
+        table_z = self._current_table_z_for_manual_jog()
+        calibration_touch_mode = self.test_page.calibration_touch_mode_enabled()
+        dry_run = bool(self.settings.get("movementAdapterDryRun", True))
+        delta = 2.0 * direction
+
+        def task() -> dict[str, Any]:
+            client = EspClient(esp_url, fake=fake)
+            adapter = RobotMotionAdapter(client, dry_run=dry_run, logger=lambda message: None)
+            result = adapter.jog_axis(
+                axis,
+                delta,
+                table_z=table_z,
+                calibration_touch_mode=calibration_touch_mode,
+            )
+            return {"status": result.status, "pose": result.pose, "command": result.command, "sent": result.sent}
+
+        def on_result(result: dict[str, Any]) -> None:
+            pose = result["pose"]
+            command = result["command"]
+            self.test_page.set_proposed_jog({"x": pose.x, "y": pose.y, "z": pose.z, "pitch": pose.pitch}, command)
+            self.log(f"Jog command: {command}")
+            self.log(f"PyGUI sending same as web UI: {command}")
+            if not result.get("sent"):
+                self.log(f"Movement adapter dry-run: not sent: {command}")
+            else:
+                self._on_esp_status_result(result.get("status", {}))
+
+        self._run_background(task, on_result, "Jog refused")
+
+    def _current_table_z_for_manual_jog(self) -> float | None:
+        if not self.last_esp_status:
+            return None
+        try:
+            from .calibration_manager import estimate_table_z
+
+            x = float(self.last_esp_status.get("x"))
+            y = float(self.last_esp_status.get("y"))
+            return estimate_table_z(self.calibration, x, y)
+        except Exception:
+            return None
 
     def set_auto_pick_enabled(self, enabled: bool) -> None:
         if enabled:

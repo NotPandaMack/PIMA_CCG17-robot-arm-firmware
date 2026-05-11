@@ -78,11 +78,6 @@ class EspClient:
         data = response.json()
         return data if isinstance(data, dict) else {"ok": True, "command": command}
 
-
-def ik_move_command(dx: float, dy: float, dz: float, dp: float) -> str:
-    return f"IKMOVE:{dx:.2f}:{dy:.2f}:{dz:.2f}:{dp:.2f}"
-
-
 def _warn_if_main_thread(operation: str) -> None:
     if threading.current_thread() is threading.main_thread():
         logger.warning("ESP network call made from main thread: %s", operation)
