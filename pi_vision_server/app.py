@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -23,6 +25,33 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Robot Arm Vision Bridge")
+
+# ESP status cache — limits ESP to at most 1 poll per second regardless of how many clients ask.
+# The ESP8266 can only handle ~1-2 concurrent HTTP connections; without this, simultaneous polls
+# from the WebUI, DesktopGUI auto-pick timer, and calibration tasks overwhelm it.
+_esp_cache: dict[str, Any] = {}
+_esp_cache_ts: float = 0.0
+_esp_cache_lock = threading.Lock()
+_ESP_CACHE_TTL = 1.0  # seconds
+
+
+def _get_cached_esp_status(base_url: str) -> dict[str, Any]:
+    global _esp_cache, _esp_cache_ts
+    now = time.monotonic()
+    with _esp_cache_lock:
+        if _esp_cache and now - _esp_cache_ts < _ESP_CACHE_TTL:
+            return dict(_esp_cache)
+        try:
+            status = EspClient(base_url).get_status()
+            _esp_cache = status
+            _esp_cache_ts = now
+            return dict(status)
+        except Exception as error:
+            if _esp_cache:
+                return dict(_esp_cache) | {"stale": True, "error": str(error)}
+            raise
+
+
 store = TargetStore()
 website_vision_store = TargetStore()
 manual_control_store = TargetStore()
@@ -166,14 +195,14 @@ def pick(hoverOnly: bool = Query(default=False)) -> dict[str, Any]:
     calibration = load_calibration()
     client = EspClient(config.esp_base_url)
     try:
-        esp_status = client.get_status()
+        esp_status_val = _get_cached_esp_status(config.esp_base_url)
     except Exception as error:
         logger.warning("ESP unreachable during pick: %s", error)
         return {"ok": False, "sent": False, "errors": [f"ESP unreachable: {error}"], "commands": []}
-    if esp_status.get("estop") is True:
+    if esp_status_val.get("estop") is True:
         return {"ok": False, "sent": False, "errors": ["ESP ESTOP is active"], "commands": []}
-    plan = build_pick_plan(store.get(), config, calibration, hoverOnly, current_position=esp_status)
-    return execute_plan(plan, client, esp_status=esp_status)
+    plan = build_pick_plan(store.get(), config, calibration, hoverOnly, current_position=esp_status_val)
+    return execute_plan(plan, client, esp_status=esp_status_val)
 
 
 @app.get("/vision/calibration")
@@ -201,4 +230,7 @@ def reset() -> dict[str, Any]:
 @app.get("/vision/esp/status")
 def esp_status() -> dict[str, Any]:
     config = load_config()
-    return EspClient(config.esp_base_url).get_status()
+    try:
+        return _get_cached_esp_status(config.esp_base_url)
+    except Exception as error:
+        raise HTTPException(status_code=503, detail=f"ESP unreachable: {error}") from error
