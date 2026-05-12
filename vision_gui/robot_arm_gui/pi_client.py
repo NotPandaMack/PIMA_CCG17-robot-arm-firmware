@@ -28,6 +28,7 @@ class PiClient:
             "safeHoverZ": 80.0,
             "grabOffsetZ": 10.0,
             "liftZ": 100.0,
+            "zAxisInverted": True,
             "closeClawDegrees": 55,
             "moveDurationMs": 1200,
             "grabWaitAfterMs": 850,
@@ -136,10 +137,11 @@ class PiClient:
 
         x = float(target.get("robotX", 35.0)) if target else 35.0
         y = float(target.get("robotY", 210.0)) if target else 210.0
-        table_z = 0.0
-        hover_z = table_z + float(self._mock_config["safeHoverZ"])
-        grab_z = table_z + float(self._mock_config["grabOffsetZ"])
-        lift_z = table_z + float(self._mock_config["liftZ"])
+        table_z = float((self._mock_calibration.get("tableZ") or {}).get("z", 120.0))
+        z_sign = -1.0 if self._mock_config.get("zAxisInverted", True) else 1.0
+        hover_z = table_z + (z_sign * float(self._mock_config["safeHoverZ"]))
+        grab_z = table_z + (z_sign * float(self._mock_config["grabOffsetZ"]))
+        lift_z = table_z + (z_sign * float(self._mock_config["liftZ"]))
         pitch = float(self._mock_calibration.get("pickupPitchDeg") or -8.0)
         commands = [
             "STOP",
@@ -170,6 +172,7 @@ class PiClient:
                 "hoverZ": hover_z,
                 "skimGrabZ": grab_z,
                 "liftZ": lift_z,
+                "zAxisInverted": bool(self._mock_config.get("zAxisInverted", True)),
                 "pickupPitchDeg": pitch,
                 "targetAgeSec": 0.1,
             },

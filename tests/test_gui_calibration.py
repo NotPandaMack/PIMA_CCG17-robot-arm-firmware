@@ -14,6 +14,7 @@ from vision_gui.robot_arm_gui.calibration_manager import (
     fit_side_view_table_z,
     estimate_table_z,
 )
+from vision_gui.robot_arm_gui.calibration_markers import detect_side_board_markers
 
 
 HAS_OPENCV = importlib.util.find_spec("cv2") is not None and importlib.util.find_spec("numpy") is not None
@@ -82,18 +83,35 @@ class GuiCalibrationTests(unittest.TestCase):
         table_z = fit_side_view_table_z(
             table_line={"p1": {"x": 100, "y": 400}, "p2": {"x": 500, "y": 400}},
             samples=[
-                {"robotZ": 80.0, "pixel": {"x": 220, "y": 240}, "source": "ESP pose"},
-                {"robotZ": 40.0, "pixel": {"x": 220, "y": 320}, "source": "website IK draft"},
+                {"robotZ": 40.0, "pixel": {"x": 220, "y": 240}, "source": "ESP pose"},
+                {"robotZ": 80.0, "pixel": {"x": 220, "y": 320}, "source": "website IK draft"},
             ],
             safety_margin_mm=8.0,
         )
         self.assertEqual("side_view_visual_fit", table_z["method"])
-        self.assertAlmostEqual(0.0, table_z["z"])
+        self.assertAlmostEqual(120.0, table_z["z"])
         self.assertAlmostEqual(2.0, table_z["fit"]["pixelsPerRobotMm"])
         calibration = empty_calibration()
         calibration["tableZ"] = table_z
         self.assertTrue(table_z_calibrated(calibration))
-        self.assertEqual(0.0, estimate_table_z(calibration, 10.0, 20.0))
+        self.assertEqual(120.0, estimate_table_z(calibration, 10.0, 20.0))
+
+    @unittest.skipUnless(HAS_OPENCV, "OpenCV and NumPy are not installed")
+    def test_charuco_side_board_detection(self):
+        import cv2
+        import numpy as np
+
+        aruco = cv2.aruco
+        dictionary = aruco.getPredefinedDictionary(aruco.DICT_4X4_50)
+        ids = np.arange(20, 37, dtype=np.int32)
+        board = aruco.CharucoBoard((7, 5), 1.0, 0.68, dictionary, ids)
+        image = board.generateImage((900, 600), marginSize=24, borderBits=1)
+        frame = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        result = detect_side_board_markers(frame)
+        self.assertEqual("charuco", result["type"])
+        self.assertGreaterEqual(result["charucoCornerCount"], 12)
+        self.assertEqual("good", result["quality"])
+        self.assertIn(20, result["visibleArucoIds"])
 
 
 if __name__ == "__main__":

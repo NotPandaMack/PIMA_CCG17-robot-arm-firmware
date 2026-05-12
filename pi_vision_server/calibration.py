@@ -24,6 +24,7 @@ def empty_calibration() -> dict[str, Any]:
     return {
         "status": "not_calibrated",
         "createdAt": None,
+        "zAxisInverted": True,
         "camera": {"width": None, "height": None},
         "origin": None,
         "pickupPitchDeg": None,
@@ -31,6 +32,9 @@ def empty_calibration() -> dict[str, Any]:
         "points": [],
         "reprojectionError": None,
         "tableZ": {"method": "placeholder", "points": []},
+        "safeHoverZ": None,
+        "lowApproachZ": None,
+        "liftZ": None,
     }
 
 
@@ -78,20 +82,20 @@ def calibration_status(calibration: dict[str, Any]) -> CalibrationStatus:
         table_z_status = "calibrated"
 
     return CalibrationStatus(
-        is_calibrated=calibration.get("status") == "calibrated" and has_homography,
+        is_calibrated=calibration.get("status") == "calibrated" and has_homography and table_z_status == "calibrated",
         has_homography=has_homography,
         has_pickup_pitch=isinstance(pickup_pitch, (int, float)) and math.isfinite(float(pickup_pitch)),
         table_z_status=table_z_status,
     )
 
 
-def get_table_z(calibration: dict[str, Any], x: float, y: float) -> float:
+def get_table_z(calibration: dict[str, Any], x: float, y: float) -> float | None:
     table_z = calibration.get("tableZ") if isinstance(calibration.get("tableZ"), dict) else {}
     if table_z.get("method") == "side_view_visual_fit" and _finite(table_z.get("z")):
         return float(table_z["z"])
     points = table_z.get("points", [])
     if not isinstance(points, list) or len(points) < 3:
-        return 0.0
+        return None
 
     usable = []
     for point in points:
@@ -106,7 +110,7 @@ def get_table_z(calibration: dict[str, Any], x: float, y: float) -> float:
     if len(usable) < 3:
         if usable:
             return sum(point[2] for point in usable) / len(usable)
-        return 0.0
+        return None
 
     fit = _fit_plane(usable)
     if fit is None:

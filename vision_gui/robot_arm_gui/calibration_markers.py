@@ -13,6 +13,8 @@ MARKER_DEFINITIONS: dict[int, dict[str, Any]] = {
 }
 
 SIDE_BOARD_MARKER_IDS = tuple(range(20, 32))
+CHARUCO_SIDE_BOARD_IDS = tuple(range(20, 37))
+CHARUCO_BOARD_SIZE = (7, 5)
 
 
 LABEL_TO_ID = {definition["label"]: marker_id for marker_id, definition in MARKER_DEFINITIONS.items()}
@@ -119,6 +121,9 @@ def detect_side_board_markers(frame: Any) -> dict[str, Any]:
     markers: list[dict[str, Any]] = []
     rejected_count = 0
     if hasattr(cv2, "aruco"):
+        charuco = _detect_charuco_side_board(cv2, gray)
+        if charuco:
+            return charuco
         try:
             dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
             parameters = _aruco_parameters(cv2)
@@ -135,10 +140,114 @@ def detect_side_board_markers(frame: Any) -> dict[str, Any]:
             markers = []
     if not markers:
         markers = _detect_side_board_blocks(cv2, gray)
+    checkerboard = None
+    if not markers:
+        checkerboard = _detect_checkerboard_side_board(cv2, gray)
+        if checkerboard:
+            return checkerboard
     warnings = []
     if len(markers) < 3:
         warnings.append("Need at least three side-board markers visible for a stable board check.")
-    return {"markers": markers, "warnings": warnings, "rejectedCount": rejected_count}
+    return {"type": "aruco_grid", "markers": markers, "warnings": warnings, "rejectedCount": rejected_count}
+
+
+def _detect_charuco_side_board(cv2: Any, gray: Any) -> dict[str, Any] | None:
+    import numpy as np
+
+    aruco = cv2.aruco
+    required = ("CharucoBoard", "CharucoDetector")
+    if any(not hasattr(aruco, name) for name in required):
+        return None
+    dictionary = aruco.getPredefinedDictionary(aruco.DICT_4X4_50)
+    ids = np.array(CHARUCO_SIDE_BOARD_IDS, dtype=np.int32)
+    board = aruco.CharucoBoard(CHARUCO_BOARD_SIZE, 1.0, 0.68, dictionary, ids)
+    detector = aruco.CharucoDetector(board)
+    try:
+        charuco_corners, charuco_ids, marker_corners, marker_ids = detector.detectBoard(gray)
+    except Exception:
+        return None
+    markers: list[dict[str, Any]] = []
+    if marker_ids is not None:
+        for index, marker_id_value in enumerate(marker_ids.flatten().tolist()):
+            marker_id = int(marker_id_value)
+            if marker_id not in CHARUCO_SIDE_BOARD_IDS:
+                continue
+            markers.append(_side_marker(marker_id, marker_corners[index].reshape(4, 2), "side-board-charuco-aruco"))
+    corner_count = 0 if charuco_ids is None else len(charuco_ids)
+    if corner_count < 4:
+        return None
+    chessboard_corners = board.getChessboardCorners()
+    image_points = []
+    object_points = []
+    charuco_points = []
+    for corner, corner_id_value in zip(charuco_corners.reshape(-1, 2), charuco_ids.flatten().tolist(), strict=False):
+        corner_id = int(corner_id_value)
+        object_corner = chessboard_corners[corner_id]
+        image_points.append([float(corner[0]), float(corner[1])])
+        object_points.append([float(object_corner[0]), float(object_corner[1])])
+        charuco_points.append({"id": corner_id, "x": float(corner[0]), "y": float(corner[1])})
+    quality = "good" if corner_count >= 12 else "warning" if corner_count >= 6 else "poor"
+    reprojection_error = None
+    outline = None
+    axes = None
+    if len(image_points) >= 4:
+        homography, _mask = cv2.findHomography(np.array(object_points, dtype=np.float32), np.array(image_points, dtype=np.float32))
+        if homography is not None:
+            projected = cv2.perspectiveTransform(np.array(object_points, dtype=np.float32).reshape(-1, 1, 2), homography).reshape(-1, 2)
+            errors = np.linalg.norm(projected - np.array(image_points, dtype=np.float32), axis=1)
+            reprojection_error = float(errors.mean())
+            max_x = float(CHARUCO_BOARD_SIZE[0] - 1)
+            max_y = float(CHARUCO_BOARD_SIZE[1] - 1)
+            outline_points = np.array([[[0.0, 0.0]], [[max_x, 0.0]], [[max_x, max_y]], [[0.0, max_y]]], dtype=np.float32)
+            projected_outline = cv2.perspectiveTransform(outline_points, homography).reshape(-1, 2)
+            outline = [{"x": float(x), "y": float(y)} for x, y in projected_outline.tolist()]
+            axis_points = np.array([[[0.0, 0.0]], [[1.5, 0.0]], [[0.0, 1.5]]], dtype=np.float32)
+            projected_axes = cv2.perspectiveTransform(axis_points, homography).reshape(-1, 2)
+            axes = {
+                "origin": {"x": float(projected_axes[0][0]), "y": float(projected_axes[0][1])},
+                "x": {"x": float(projected_axes[1][0]), "y": float(projected_axes[1][1])},
+                "y": {"x": float(projected_axes[2][0]), "y": float(projected_axes[2][1])},
+            }
+    warnings = []
+    if corner_count < 6:
+        warnings.append("Too few ChArUco corners are visible.")
+    elif corner_count < 12:
+        warnings.append("Move phone or monitor until more ChArUco corners are visible.")
+    return {
+        "type": "charuco",
+        "markers": markers,
+        "charucoCorners": charuco_points,
+        "charucoCornerCount": corner_count,
+        "visibleArucoIds": [int(value) for value in marker_ids.flatten().tolist()] if marker_ids is not None else [],
+        "quality": quality,
+        "reprojectionError": reprojection_error,
+        "boardOutline": outline,
+        "axes": axes,
+        "warnings": warnings,
+        "rejectedCount": 0,
+    }
+
+
+def _detect_checkerboard_side_board(cv2: Any, gray: Any) -> dict[str, Any] | None:
+    ok, corners = cv2.findChessboardCorners(gray, (6, 4))
+    if not ok or corners is None:
+        return None
+    points = corners.reshape(-1, 2)
+    outline_indices = (0, 5, 23, 18)
+    outline = [{"x": float(points[index][0]), "y": float(points[index][1])} for index in outline_indices]
+    return {
+        "type": "checkerboard",
+        "markers": [],
+        "charucoCorners": [{"id": index, "x": float(x), "y": float(y)} for index, (x, y) in enumerate(points.tolist())],
+        "charucoCornerCount": len(points),
+        "visibleArucoIds": [],
+        "quality": "fallback",
+        "reprojectionError": None,
+        "boardOutline": outline,
+        "axes": None,
+        "warnings": ["Using checkerboard fallback; ChArUco markers were not detected."],
+        "rejectedCount": 0,
+    }
 
 
 def detect_qr_markers(frame: Any) -> dict[str, Any]:

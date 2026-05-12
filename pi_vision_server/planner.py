@@ -47,13 +47,20 @@ def build_pick_plan(
     x = float(robot_x)
     y = float(robot_y)
     table_z = get_table_z(calibration, x, y)
-    hover_z = table_z + config.safe_hover_z
-    grab_z = table_z + config.grab_offset_z
-    lift_z = table_z + config.lift_z
+    if table_z is None:
+        errors.append("tableZ is missing; complete side-view table height calibration")
+        return _empty_plan(config, calibration, hover_only, errors, target)
+    z_sign = -1.0 if config.z_axis_inverted else 1.0
+    hover_z = table_z + (z_sign * config.safe_hover_z)
+    grab_z = table_z + (z_sign * config.grab_offset_z)
+    lift_z = table_z + (z_sign * config.lift_z)
 
     bounds_result = workspace_validation(config, x, y, [hover_z] if hover_only else [hover_z, grab_z, lift_z])
     if not bounds_result["ok"]:
         errors.extend(bounds_result["errors"])
+    collision_result = table_clearance_validation(config, table_z, [hover_z] if hover_only else [hover_z, grab_z, lift_z])
+    if not collision_result["ok"]:
+        errors.extend(collision_result["errors"])
 
     status = calibration_status(calibration)
     if not status.is_calibrated:
@@ -95,10 +102,12 @@ def build_pick_plan(
             "hoverZ": hover_z,
             "skimGrabZ": grab_z,
             "liftZ": lift_z,
+            "zAxisInverted": config.z_axis_inverted,
             "pickupPitchDeg": float(pickup_pitch) if _finite(pickup_pitch) else None,
             "targetAgeSec": age,
         },
         "workspace": bounds_result,
+        "tableClearance": collision_result,
         "calibration": {
             "isCalibrated": status.is_calibrated,
             "hasHomography": status.has_homography,
@@ -146,6 +155,17 @@ def workspace_validation(config: VisionConfig, x: float, y: float, z_values: lis
             errors.append(f"Z {z:.1f} outside {bounds.z_min:.1f}..{bounds.z_max:.1f}")
 
     return {"ok": len(errors) == 0, "errors": errors, "bounds": asdict(bounds)}
+
+
+def table_clearance_validation(config: VisionConfig, table_z: float, z_values: list[float]) -> dict[str, Any]:
+    errors = []
+    for z in z_values:
+        if config.z_axis_inverted:
+            if z >= table_z:
+                errors.append(f"Z {z:.1f} is at or below tableZ {table_z:.1f}")
+        elif z <= table_z:
+            errors.append(f"Z {z:.1f} is at or below tableZ {table_z:.1f}")
+    return {"ok": len(errors) == 0, "errors": errors, "tableZ": table_z, "zAxisInverted": config.z_axis_inverted}
 
 
 def _keyframe(
@@ -201,9 +221,12 @@ def _empty_plan(
             "robotY": target.get("robotY") if target else None,
             "hoverZ": None,
             "skimGrabZ": None,
+            "tableZ": None,
+            "zAxisInverted": config.z_axis_inverted,
             "pickupPitchDeg": calibration.get("pickupPitchDeg"),
         },
         "workspace": {"ok": False, "errors": errors, "bounds": asdict(config.workspace)},
+        "tableClearance": {"ok": False, "errors": errors, "tableZ": None, "zAxisInverted": config.z_axis_inverted},
         "calibration": {
             "isCalibrated": status.is_calibrated,
             "hasHomography": status.has_homography,
@@ -212,4 +235,3 @@ def _empty_plan(
         },
         "commands": [],
     }
-

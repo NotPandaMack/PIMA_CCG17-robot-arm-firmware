@@ -1,6 +1,7 @@
 {
   "status": "calibrated",
   "createdAt": "2026-05-11T00:00:00Z",
+  "zAxisInverted": true,
   "camera": {
     "width": 1280,
     "height": 720
@@ -77,32 +78,22 @@
   ],
   "reprojectionError": 0.0,
   "tableZ": {
-    "method": "plane",
-    "points": [
-      {
-        "label": "center-near",
-        "x": 0.0,
-        "y": 120.0,
-        "z": 0.0
-      },
-      {
-        "label": "center-far",
-        "x": 0.0,
-        "y": 240.0,
-        "z": 0.0
-      },
-      {
-        "label": "left-mid",
-        "x": -100.0,
-        "y": 180.0,
-        "z": 0.0
-      },
-      {
-        "label": "right-mid",
-        "x": 100.0,
-        "y": 180.0,
-        "z": 0.0
-      }
-    ]
-  }
+    "method": "side_view_visual_fit",
+    "zAxisInverted": true,
+    "z": 120.0,
+    "safetyMarginMm": 10.0,
+    "samples": [],
+    "tableLine": {
+      "p1": {"x": 120, "y": 370},
+      "p2": {"x": 900, "y": 372}
+    },
+    "fit": {
+      "pixelsPerRobotMm": 2.0,
+      "robotMmPerPixel": -0.5,
+      "errorPx": 2.0
+    }
+  },
+  "safeHoverZ": 60.0,
+  "lowApproachZ": 105.0,
+  "liftZ": 30.0
 }

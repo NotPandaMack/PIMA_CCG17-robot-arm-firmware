@@ -35,6 +35,7 @@ from .calibration_manager import (
     pickup_pose_calibrated,
     save_local_calibration,
     table_z_calibrated,
+    table_relative_z_values,
     workspace_bounds_saved,
 )
 from .calibration_markers import (
@@ -60,6 +61,41 @@ from .widgets.test_page import TestPage
 
 
 logger = logging.getLogger(__name__)
+
+
+def _track_claw_marker(frame: Any, hsv_settings: dict | None) -> dict | None:
+    if not isinstance(hsv_settings, dict):
+        return None
+    try:
+        import cv2
+        import numpy as np
+    except Exception:
+        return None
+    h = float(hsv_settings.get("h", 0.0))
+    s = float(hsv_settings.get("s", 0.0))
+    v = float(hsv_settings.get("v", 0.0))
+    tol_h = float(hsv_settings.get("toleranceH", 12.0))
+    tol_s = float(hsv_settings.get("toleranceS", 80.0))
+    tol_v = float(hsv_settings.get("toleranceV", 80.0))
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    lower = np.array([max(0.0, h - tol_h), max(0.0, s - tol_s), max(0.0, v - tol_v)], dtype=np.uint8)
+    upper = np.array([min(179.0, h + tol_h), min(255.0, s + tol_s), min(255.0, v + tol_v)], dtype=np.uint8)
+    mask = cv2.inRange(hsv, lower, upper)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), dtype=np.uint8))
+    contours, _hierarchy = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    contour = max(contours, key=cv2.contourArea)
+    area = float(cv2.contourArea(contour))
+    if area < 12.0:
+        return None
+    moments = cv2.moments(contour)
+    if abs(moments["m00"]) < 1e-6:
+        return None
+    x = moments["m10"] / moments["m00"]
+    y = moments["m01"] / moments["m00"]
+    confidence = min(1.0, area / 800.0)
+    return {"pixel": {"x": int(round(x)), "y": int(round(y))}, "confidence": confidence, "area": area, "source": "hsv_claw_marker"}
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
@@ -269,10 +305,12 @@ class MainWindow(QMainWindow):
         self.calibration_page.marker_overlay_changed.connect(lambda _markers: self.update_calibration_marker_overlay())
         self.calibration_page.step_changed.connect(lambda _step: self.update_calibration_marker_overlay())
         self.calibration_page.save_touch_requested.connect(self.save_table_touch_point)
+        self.calibration_page.start_auto_calibration_requested.connect(self.start_auto_calibration)
         self.calibration_page.start_side_camera_requested.connect(self.start_side_camera)
         self.calibration_page.stop_side_camera_requested.connect(self.stop_side_camera)
         self.calibration_page.detect_side_board_requested.connect(self.detect_side_board)
         self.calibration_page.save_side_sample_requested.connect(self.save_side_sample)
+        self.calibration_page.sample_claw_color_requested.connect(self.sample_claw_marker_color)
         self.calibration_page.save_pickup_requested.connect(self.save_pickup_pose_from_esp)
         self.calibration_page.save_step_requested.connect(self.save_calibration_step)
         self.calibration_page.preview_hover_requested.connect(lambda: self.generate_preview(True))
@@ -427,6 +465,7 @@ class MainWindow(QMainWindow):
         self.last_esp_status = status
         self.esp_connected = True
         self.log("ESP connected.")
+        self.calibration_page.update_wizard_status({"top_camera": self.webcam_connected, "side_camera": self.side_camera_connected, "website": bool(self.settings.get("websiteUrl")), "esp": True})
         self.update_ui_state()
 
     def test_webcam(self) -> None:
@@ -658,19 +697,60 @@ class MainWindow(QMainWindow):
         self.side_camera_tested = True
         self.calibration_page.set_side_camera_status(message)
         self.connection_page.update_side_camera_status(online, message)
+        self.calibration_page.update_wizard_status({"top_camera": self.webcam_connected, "side_camera": online, "website": bool(self.settings.get("websiteUrl")), "esp": self.esp_connected})
         if not online and "stopped" not in message.lower():
             self.log(message)
 
     def on_side_camera_frame(self, frame: Any) -> None:
         h, w = frame.shape[:2]
         self.last_side_frame = frame.copy()
+        if self.calibration_page.auto_track_claw_enabled():
+            self.calibration_page.set_tracked_claw_marker(_track_claw_marker(frame, self.calibration_page.claw_marker_hsv))
         image = QImage(frame.data, w, h, frame.strides[0], QImage.Format_BGR888).copy()
         self.calibration_page.side_camera_view.set_frame(QPixmap.fromImage(image), (w, h))
+
+    def start_auto_calibration(self) -> None:
+        self.log("Auto calibration wizard started. GUI will not send robot motion.")
+        self.calibration_page.set_step(1)
+        if not self.camera_worker or not self.camera_worker.isRunning():
+            self.start_camera()
+        if not self.side_camera_worker or not self.side_camera_worker.isRunning():
+            self.start_side_camera(str(self.settings.get("sideCameraUrl", DEFAULT_SIDE_CAMERA_URL)))
+        self.calibration_page.update_wizard_status(
+            {
+                "top_camera": self.webcam_connected or self.camera_worker is not None,
+                "side_camera": self.side_camera_worker is not None,
+                "website": bool(self.settings.get("websiteUrl")),
+                "esp": self.last_esp_status is not None or self.esp_connected,
+            }
+        )
+        if self.last_camera_frame is not None:
+            self.scan_aruco_markers()
+        if self.last_side_frame is not None:
+            self.detect_side_board()
+
+    def sample_claw_marker_color(self, x: int, y: int) -> None:
+        if self.last_side_frame is None:
+            self.log("Claw marker color not sampled: side camera frame is missing.")
+            return
+        h, w = self.last_side_frame.shape[:2]
+        if x < 0 or y < 0 or x >= w or y >= h:
+            self.log("Claw marker color not sampled: click is outside the side frame.")
+            return
+        import cv2
+
+        hsv = cv2.cvtColor(self.last_side_frame, cv2.COLOR_BGR2HSV)
+        px = hsv[max(0, y - 2) : min(h, y + 3), max(0, x - 2) : min(w, x + 3)]
+        mean = px.reshape(-1, 3).mean(axis=0)
+        self.calibration_page.set_claw_marker_color({"h": float(mean[0]), "s": float(mean[1]), "v": float(mean[2]), "toleranceH": 12.0, "toleranceS": 80.0, "toleranceV": 80.0})
+        self.calibration_page.side_click_mode.setCurrentIndex(self.calibration_page.side_click_mode.findData("tip"))
+        self.log(f"Sampled claw marker color at {x}, {y}.")
 
     def on_camera_status(self, online: bool, message: str) -> None:
         self.webcam_tested = True
         self.webcam_connected = online
         self.log(message)
+        self.calibration_page.update_wizard_status({"top_camera": online, "side_camera": self.side_camera_connected, "website": bool(self.settings.get("websiteUrl")), "esp": self.esp_connected})
         self.update_ui_state()
 
     def on_camera_frame(self, frame: Any) -> None:
@@ -846,7 +926,7 @@ class MainWindow(QMainWindow):
             self.calibration_page.camera_view.set_marker(None, None)
         self.calibration_page.camera_view.set_calibration_overlay(
             markers=self.calibration_page.mapping_overlay() if mapping_step else {},
-            origin_pixel=self.calibration_page.origin_pixel if mapping_step else None,
+            origin_pixel=self.calibration_page.origin_pixel if self.calibration_page.step_index in {1, 2} else None,
             expected_guides=mapping_step,
             rulers_enabled=mapping_step,
         )
@@ -923,6 +1003,20 @@ class MainWindow(QMainWindow):
             count = len(markers)
             warning_text = f" Warnings: {' '.join(warnings)}" if warnings else ""
             self.log(f"{marker_type} scan found {count}/4 calibration markers.{warning_text}")
+            if count == 4:
+                points = self.calibration_page.mapping_points()
+                try:
+                    homography, reprojection_error = build_mapping_homography(points)
+                except Exception as error:
+                    self.calibration_page.set_mapping_quality(f"Top XY mapping blocked: {error}")
+                    self.log(f"Top XY mapping blocked: {error}")
+                    return
+                self.calibration["points"] = points
+                self.calibration["homography"] = homography
+                self.calibration["reprojectionError"] = reprojection_error
+                self.calibration_page.set_mapping_quality(f"Top XY mapping ready. Error {reprojection_error:.2f} mm.")
+                self.log(f"Top XY mapping ready. Reprojection error: {reprojection_error:.2f} mm.")
+                self.calibration_page.update_wizard_status({"top_camera": self.webcam_connected, "side_camera": self.side_camera_connected, "website": bool(self.settings.get("websiteUrl")), "esp": self.esp_connected})
 
         def on_error(message: str) -> None:
             if marker_type == "ArUco":
@@ -1131,21 +1225,47 @@ class MainWindow(QMainWindow):
                 workspace=self.calibration_page.workspace(),
                 table_z=self.calibration_page.table_z(),
                 pickup=self.calibration_page.pickup_values(),
+                z_axis_inverted=True,
             )
         except Exception as error:
             self.log(f"Calibration cannot finish: {error}")
             return
+        table_z = calibration.get("tableZ") if isinstance(calibration.get("tableZ"), dict) else {}
+        if isinstance(table_z.get("z"), (int, float)):
+            z_values = table_relative_z_values(float(table_z["z"]), z_axis_inverted=True)
+            calibration.update(z_values)
+            calibration["hoverZ"] = z_values["safeHoverZ"]
+            calibration["grabOffsetZ"] = z_values["lowApproachZ"]
+            calibration["liftZ"] = z_values["liftZ"]
+            calibration["lowApproachZ"] = z_values["lowApproachZ"]
+            calibration["minimumClearanceMm"] = 10.0
+            calibration["hoverClearanceMm"] = 60.0
+            calibration["approachClearanceMm"] = 15.0
+            calibration["liftClearanceMm"] = 90.0
+        calibration["sideCamera"] = {"url": str(self.settings.get("sideCameraUrl", DEFAULT_SIDE_CAMERA_URL))}
+        calibration["sideBoard"] = self.calibration_page.side_board_detection
+        calibration["clawMarker"] = {
+            "hsv": self.calibration_page.claw_marker_hsv,
+            "lastDetection": self.calibration_page.claw_marker,
+            "autoTrack": self.calibration_page.auto_track_claw.isChecked() if hasattr(self.calibration_page, "auto_track_claw") else False,
+        }
+        calibration["calibrationStatus"] = {
+            "topXYReady": has_homography(calibration),
+            "sideZReady": table_z_calibrated(calibration),
+            "pickupReady": pickup_pose_calibrated(calibration),
+        }
         if not calibration_complete(calibration):
-            self.log("Calibration incomplete: mapping, workspace, table Z, and pickup pose are all required.")
+            self.log("Calibration incomplete: top XY mapping, workspace, and side Z are required.")
             return
         self.calibration = calibration
         save_local_calibration(self.calibration)
         config_patch = {
             "workspace": self.calibration["workspaceBounds"],
-            "safeHoverZ": float(self.calibration["hoverZ"]),
-            "grabOffsetZ": float(self.calibration["grabOffsetZ"]),
-            "liftZ": float(self.calibration["liftZ"]),
-            "closeClawDegrees": int(self.calibration["clawClosedValue"]),
+            "safeHoverZ": float(self.calibration.get("hoverClearanceMm", 60.0)),
+            "grabOffsetZ": float(self.calibration.get("approachClearanceMm", 15.0)),
+            "liftZ": float(self.calibration.get("liftClearanceMm", 90.0)),
+            "zAxisInverted": True,
+            "closeClawDegrees": int(self.calibration.get("clawClosedValue") or 55),
         }
         pi_url = self.settings["piUrl"]
         mock = bool(self.settings.get("mockPi"))
@@ -1156,7 +1276,11 @@ class MainWindow(QMainWindow):
             client.put_calibration(calibration_payload)
             return client.put_config(config_patch)
 
-        self._run_background(task, lambda _result: self.log("Calibration saved locally and uploaded to Pi."), "Calibration saved locally but Pi upload failed")
+        def on_saved(_result: dict[str, Any]) -> None:
+            self.calibration_page.update_wizard_status({"saved": True, "top_camera": True, "side_camera": self.side_camera_connected, "website": True, "esp": self.esp_connected})
+            self.log("Calibration saved locally and uploaded to Pi.")
+
+        self._run_background(task, on_saved, "Calibration saved locally but Pi upload failed")
         if self.camera_worker:
             self.camera_worker.configure(homography=self.calibration.get("homography"))
         self.update_ui_state()

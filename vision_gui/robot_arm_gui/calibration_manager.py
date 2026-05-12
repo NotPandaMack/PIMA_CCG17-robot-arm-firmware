@@ -70,6 +70,7 @@ def empty_calibration() -> dict[str, Any]:
     return {
         "status": "not_calibrated",
         "createdAt": None,
+        "zAxisInverted": True,
         "camera": {"width": None, "height": None},
         "origin": None,
         "pickupPitchDeg": None,
@@ -84,6 +85,12 @@ def empty_calibration() -> dict[str, Any]:
         "points": [],
         "reprojectionError": None,
         "tableZ": {"method": "placeholder", "points": []},
+        "safeHoverZ": None,
+        "lowApproachZ": None,
+        "minimumClearanceMm": 10.0,
+        "hoverClearanceMm": 60.0,
+        "approachClearanceMm": 15.0,
+        "liftClearanceMm": 90.0,
     }
 
 
@@ -137,7 +144,7 @@ def table_z_calibrated(calibration: dict[str, Any]) -> bool:
     usable = [point for point in points or [] if isinstance(point, dict) and all(_finite(point.get(k)) for k in ("x", "y", "z"))]
     if len(usable) >= 3:
         return True
-    return table_z.get("method") == "placeholder" and _finite(table_z.get("z"))
+    return False
 
 
 def pickup_pose_calibrated(calibration: dict[str, Any]) -> bool:
@@ -148,7 +155,7 @@ def pickup_pose_calibrated(calibration: dict[str, Any]) -> bool:
 
 
 def calibration_complete(calibration: dict[str, Any]) -> bool:
-    return has_homography(calibration) and workspace_bounds_saved(calibration) and table_z_calibrated(calibration) and pickup_pose_calibrated(calibration)
+    return has_homography(calibration) and workspace_bounds_saved(calibration) and table_z_calibrated(calibration)
 
 
 def build_calibration(
@@ -160,6 +167,7 @@ def build_calibration(
     workspace: dict[str, float],
     table_z: dict[str, Any],
     pickup: dict[str, Any],
+    z_axis_inverted: bool = True,
 ) -> dict[str, Any]:
     import cv2
     import numpy as np
@@ -178,6 +186,7 @@ def build_calibration(
         {
             "status": "calibrated",
             "createdAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "zAxisInverted": bool(z_axis_inverted),
             "camera": {"width": int(camera_width), "height": int(camera_height)},
             "origin": {"pixel": {"x": int(origin_pixel[0]), "y": int(origin_pixel[1])}},
             "homography": homography.tolist(),
@@ -239,7 +248,8 @@ def fit_side_view_table_z(
     *,
     samples: list[dict[str, Any]],
     table_line: dict[str, Any],
-    safety_margin_mm: float = 8.0,
+    safety_margin_mm: float = 10.0,
+    z_axis_inverted: bool = True,
 ) -> dict[str, Any]:
     usable: list[tuple[float, float, float]] = []
     for sample in samples:
@@ -278,23 +288,45 @@ def fit_side_view_table_z(
         raise ValueError("side-view fit is singular")
 
     slope_robot_mm_per_px = ((n * sum_delta_z) - (sum_delta * sum_z)) / denom
-    if not math.isfinite(slope_robot_mm_per_px) or slope_robot_mm_per_px <= 0.0:
-        raise ValueError("side-view samples must place higher robot Z farther above the table line")
+    if not math.isfinite(slope_robot_mm_per_px):
+        raise ValueError("side-view fit is invalid")
+    if z_axis_inverted and slope_robot_mm_per_px >= 0.0:
+        raise ValueError("inverted-Z samples must have lower robot Z farther above the table line")
+    if not z_axis_inverted and slope_robot_mm_per_px <= 0.0:
+        raise ValueError("side-view samples must have higher robot Z farther above the table line")
     intercept_table_z = (sum_z - (slope_robot_mm_per_px * sum_delta)) / n
-    pixels_per_robot_mm = 1.0 / slope_robot_mm_per_px
+    pixels_per_robot_mm = abs(1.0 / slope_robot_mm_per_px)
     predicted_deltas = [(robot_z - intercept_table_z) * pixels_per_robot_mm for robot_z, _x, _y in usable]
     error_px = sum(abs(actual - predicted) for actual, predicted in zip(deltas, predicted_deltas, strict=False)) / len(deltas)
 
     return {
         "method": "side_view_visual_fit",
+        "zAxisInverted": bool(z_axis_inverted),
         "z": float(intercept_table_z),
         "safetyMarginMm": float(safety_margin_mm),
         "samples": samples,
         "tableLine": table_line,
         "fit": {
             "pixelsPerRobotMm": float(pixels_per_robot_mm),
+            "robotMmPerPixel": float(slope_robot_mm_per_px),
             "errorPx": float(error_px),
         },
+    }
+
+
+def table_relative_z_values(
+    table_z: float,
+    *,
+    z_axis_inverted: bool = True,
+    hover_clearance_mm: float = 60.0,
+    approach_clearance_mm: float = 15.0,
+    lift_clearance_mm: float = 90.0,
+) -> dict[str, float]:
+    sign = -1.0 if z_axis_inverted else 1.0
+    return {
+        "safeHoverZ": float(table_z + (sign * hover_clearance_mm)),
+        "lowApproachZ": float(table_z + (sign * approach_clearance_mm)),
+        "liftZ": float(table_z + (sign * lift_clearance_mm)),
     }
 
 

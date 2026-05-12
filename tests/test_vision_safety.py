@@ -32,9 +32,9 @@ def calibrated(**overrides):
         "tableZ": {
             "method": "plane",
             "points": [
-                {"label": "a", "x": 0.0, "y": 100.0, "z": 0.0},
-                {"label": "b", "x": 100.0, "y": 100.0, "z": 0.0},
-                {"label": "c", "x": 0.0, "y": 200.0, "z": 0.0},
+                {"label": "a", "x": 0.0, "y": 100.0, "z": 120.0},
+                {"label": "b", "x": 100.0, "y": 100.0, "z": 120.0},
+                {"label": "c", "x": 0.0, "y": 200.0, "z": 120.0},
             ],
         },
     }
@@ -75,10 +75,10 @@ class VisionSafetyTests(unittest.TestCase):
         plan = build_pick_plan(fresh_target(), VisionConfig(), calibrated(), hover_only=True)
         joined = "\n".join(plan["commands"])
         self.assertTrue(plan["ok"])
-        self.assertIn("ADD_KEYFRAME:MOVE:35.0:210.0:80.0:-8.0", joined)
+        self.assertIn("ADD_KEYFRAME:MOVE:35.0:210.0:40.0:-8.0", joined)
         self.assertNotIn("ADD_KEYFRAME:GRAB", joined)
-        self.assertNotIn(":10.0:-8.0", joined)
-        self.assertNotIn(":100.0:-8.0", joined)
+        self.assertNotIn(":110.0:-8.0", joined)
+        self.assertNotIn(":20.0:-8.0", joined)
 
     def test_stale_target_is_blocked(self):
         old = datetime.now(UTC) - timedelta(seconds=10)
@@ -107,7 +107,12 @@ class VisionSafetyTests(unittest.TestCase):
     def test_uncalibrated_pickup_is_blocked(self):
         plan = build_pick_plan(fresh_target(), VisionConfig(), {"status": "not_calibrated", "homography": [], "tableZ": {"points": []}})
         self.assertFalse(plan["ok"])
-        self.assertIn("calibration", " ".join(plan["errors"]))
+        self.assertIn("tableZ", " ".join(plan["errors"]))
+
+    def test_missing_table_z_never_defaults_to_zero(self):
+        plan = build_pick_plan(fresh_target(), VisionConfig(), calibrated(tableZ={"method": "placeholder", "points": []}))
+        self.assertFalse(plan["ok"])
+        self.assertIn("tableZ is missing", " ".join(plan["errors"]))
 
     def test_estop_blocks_execution_when_motion_enabled(self):
         config = VisionConfig(motion_enabled=True)
@@ -123,11 +128,11 @@ class VisionSafetyTests(unittest.TestCase):
         self.assertEqual((20.0, 250.0), result)
 
     def test_side_view_table_z_is_used(self):
-        calibration = calibrated(tableZ={"method": "side_view_visual_fit", "z": 12.4, "samples": []})
-        self.assertEqual(12.4, get_table_z(calibration, 35.0, 210.0))
+        calibration = calibrated(tableZ={"method": "side_view_visual_fit", "z": 120.0, "samples": []})
+        self.assertEqual(120.0, get_table_z(calibration, 35.0, 210.0))
         plan = build_pick_plan(fresh_target(), VisionConfig(), calibration, hover_only=True)
-        self.assertEqual(12.4, plan["calculated"]["tableZ"])
-        self.assertEqual(92.4, plan["calculated"]["hoverZ"])
+        self.assertEqual(120.0, plan["calculated"]["tableZ"])
+        self.assertEqual(40.0, plan["calculated"]["hoverZ"])
 
 
 if __name__ == "__main__":

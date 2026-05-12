@@ -6,6 +6,7 @@
   "safeHoverZ": 80.0,
   "grabOffsetZ": 10.0,
   "liftZ": 100.0,
+  "zAxisInverted": true,
   "closeClawDegrees": 55,
   "moveDurationMs": 1200,
   "grabWaitAfterMs": 850,

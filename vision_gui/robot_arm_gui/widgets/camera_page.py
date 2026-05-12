@@ -43,6 +43,7 @@ class CameraView(QLabel):
         self._side_table_line: dict | None = None
         self._side_samples: list[dict] = []
         self._side_board_markers: list[dict] = []
+        self._side_board: dict | None = None
         self._side_fit: dict | None = None
 
     def set_frame(self, pixmap: QPixmap, frame_size: tuple[int, int]) -> None:
@@ -80,11 +81,13 @@ class CameraView(QLabel):
         table_line: dict | None = None,
         samples: list[dict] | None = None,
         board_markers: list[dict] | None = None,
+        board: dict | None = None,
         fit: dict | None = None,
     ) -> None:
         self._side_table_line = table_line
         self._side_samples = list(samples or [])
         self._side_board_markers = list(board_markers or [])
+        self._side_board = board
         self._side_fit = fit
         self._render_scaled()
 
@@ -117,7 +120,7 @@ class CameraView(QLabel):
         display_rect = QRectF(0, 0, scaled.width(), scaled.height())
         if self._grid_enabled and self._grid_homography and self._grid_workspace:
             self._draw_grid(painter, display_rect)
-        if self._side_table_line or self._side_samples or self._side_board_markers or self._side_fit:
+        if self._side_table_line or self._side_samples or self._side_board_markers or self._side_board or self._side_fit:
             self._draw_side_overlay(painter, display_rect)
         if self._expected_guides_enabled or self._calibration_markers:
             self._draw_calibration_overlay(painter, display_rect)
@@ -254,6 +257,36 @@ class CameraView(QLabel):
             return []
 
     def _draw_side_overlay(self, painter: QPainter, display_rect: QRectF) -> None:
+        if self._side_board:
+            outline = self._side_board.get("boardOutline")
+            if isinstance(outline, list) and len(outline) >= 4:
+                polygon = QPolygonF()
+                for point in outline:
+                    if isinstance(point, dict):
+                        polygon.append(self._frame_to_display(float(point.get("x", 0.0)), float(point.get("y", 0.0)), display_rect))
+                if polygon.count() >= 4:
+                    painter.setPen(QPen(QColor("#22d3ee"), 4))
+                    painter.drawPolygon(polygon)
+            axes = self._side_board.get("axes")
+            if isinstance(axes, dict):
+                try:
+                    origin = self._frame_to_display(float(axes["origin"]["x"]), float(axes["origin"]["y"]), display_rect)
+                    x_axis = self._frame_to_display(float(axes["x"]["x"]), float(axes["x"]["y"]), display_rect)
+                    y_axis = self._frame_to_display(float(axes["y"]["x"]), float(axes["y"]["y"]), display_rect)
+                    painter.setPen(QPen(QColor("#ef4444"), 4))
+                    painter.drawLine(origin, x_axis)
+                    painter.drawText(x_axis, "X")
+                    painter.setPen(QPen(QColor("#22c55e"), 4))
+                    painter.drawLine(origin, y_axis)
+                    painter.drawText(y_axis, "Y")
+                except Exception:
+                    pass
+            for corner in self._side_board.get("charucoCorners", []) if isinstance(self._side_board.get("charucoCorners"), list) else []:
+                if isinstance(corner, dict):
+                    point = self._frame_to_display(float(corner.get("x", 0.0)), float(corner.get("y", 0.0)), display_rect)
+                    painter.setPen(QPen(QColor("#ffffff"), 2))
+                    painter.drawEllipse(point, 3, 3)
+
         for marker in self._side_board_markers:
             corners = marker.get("corners") if isinstance(marker, dict) else None
             if not isinstance(corners, list) or len(corners) < 4:

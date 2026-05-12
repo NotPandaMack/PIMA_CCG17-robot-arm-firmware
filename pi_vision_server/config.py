@@ -30,6 +30,7 @@ class VisionConfig:
     safe_hover_z: float = 80.0
     grab_offset_z: float = 10.0
     lift_z: float = 100.0
+    z_axis_inverted: bool = True
     close_claw_degrees: int = 55
     move_duration_ms: int = 1200
     grab_wait_after_ms: int = 850
@@ -44,6 +45,7 @@ CONFIG_KEYS = {
     "safeHoverZ",
     "grabOffsetZ",
     "liftZ",
+    "zAxisInverted",
     "closeClawDegrees",
     "moveDurationMs",
     "grabWaitAfterMs",
@@ -100,6 +102,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> VisionConfig:
         safe_hover_z=_as_float(raw.get("safeHoverZ"), defaults.safe_hover_z),
         grab_offset_z=_as_float(raw.get("grabOffsetZ"), defaults.grab_offset_z),
         lift_z=_as_float(raw.get("liftZ"), defaults.lift_z),
+        z_axis_inverted=_as_bool(raw.get("zAxisInverted"), defaults.z_axis_inverted),
         close_claw_degrees=_as_int(raw.get("closeClawDegrees"), defaults.close_claw_degrees),
         move_duration_ms=_as_int(raw.get("moveDurationMs"), defaults.move_duration_ms),
         grab_wait_after_ms=_as_int(raw.get("grabWaitAfterMs"), defaults.grab_wait_after_ms),
@@ -116,6 +119,7 @@ def config_to_dict(config: VisionConfig) -> dict[str, Any]:
         "safeHoverZ": config.safe_hover_z,
         "grabOffsetZ": config.grab_offset_z,
         "liftZ": config.lift_z,
+        "zAxisInverted": config.z_axis_inverted,
         "closeClawDegrees": config.close_claw_degrees,
         "moveDurationMs": config.move_duration_ms,
         "grabWaitAfterMs": config.grab_wait_after_ms,
@@ -170,6 +174,9 @@ def _strict_config(raw: dict[str, Any]) -> VisionConfig:
     motion_enabled = raw.get("motionEnabled")
     if not isinstance(motion_enabled, bool):
         raise ValueError("motionEnabled must be true or false")
+    z_axis_inverted_raw = raw.get("zAxisInverted", True)
+    if not isinstance(z_axis_inverted_raw, bool):
+        raise ValueError("zAxisInverted must be true or false")
 
     workspace_raw = raw.get("workspace")
     if not isinstance(workspace_raw, dict):
@@ -195,6 +202,7 @@ def _strict_config(raw: dict[str, Any]) -> VisionConfig:
     safe_hover_z = _strict_float(raw.get("safeHoverZ"), "safeHoverZ", 0.0)
     grab_offset_z = _strict_float(raw.get("grabOffsetZ"), "grabOffsetZ")
     lift_z = _strict_float(raw.get("liftZ"), "liftZ", 0.0)
+    z_axis_inverted = z_axis_inverted_raw
     close_claw_degrees = _strict_int(raw.get("closeClawDegrees"), "closeClawDegrees", 0, 180)
     move_duration_ms = _strict_int(raw.get("moveDurationMs"), "moveDurationMs", 1)
     grab_wait_after_ms = _strict_int(raw.get("grabWaitAfterMs"), "grabWaitAfterMs", 0)
@@ -207,6 +215,7 @@ def _strict_config(raw: dict[str, Any]) -> VisionConfig:
         safe_hover_z=safe_hover_z,
         grab_offset_z=grab_offset_z,
         lift_z=lift_z,
+        z_axis_inverted=z_axis_inverted,
         close_claw_degrees=close_claw_degrees,
         move_duration_ms=move_duration_ms,
         grab_wait_after_ms=grab_wait_after_ms,

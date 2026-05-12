@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..calibration_markers import MARKER_DEFINITIONS, mapping_warnings
-from ..calibration_manager import fit_side_view_table_z
+from ..calibration_manager import fit_side_view_table_z, table_relative_z_values
 from ..config import DEFAULT_SIDE_CAMERA_URL, DEFAULT_WORKSPACE
 from .camera_page import CameraView
 
@@ -55,6 +55,8 @@ class CalibrationPage(QWidget):
     stop_side_camera_requested = Signal()
     detect_side_board_requested = Signal()
     save_side_sample_requested = Signal()
+    start_auto_calibration_requested = Signal()
+    sample_claw_color_requested = Signal(int, int)
     save_pickup_requested = Signal()
     preview_hover_requested = Signal()
     test_hover_requested = Signal()
@@ -78,7 +80,10 @@ class CalibrationPage(QWidget):
         self.side_table_line: dict | None = None
         self.side_pending_tip: tuple[int, int] | None = None
         self.side_board_markers: list[dict] = []
+        self.side_board_detection: dict | None = None
         self.side_fit: dict | None = None
+        self.claw_marker_hsv: dict | None = None
+        self.claw_marker: dict | None = None
         self._side_table_clicks: list[tuple[int, int]] = []
         self.validation_pixel: tuple[int, int] | None = None
 
@@ -106,6 +111,8 @@ class CalibrationPage(QWidget):
         right = QFrame()
         right.setObjectName("panel")
         right_layout = QVBoxLayout(right)
+        self.wizard_panel = self._auto_wizard_panel()
+        right_layout.addWidget(self.wizard_panel)
         self.stack = QStackedWidget()
         self.stack.addWidget(self._camera_step())
         self.stack.addWidget(self._origin_step())
@@ -115,6 +122,8 @@ class CalibrationPage(QWidget):
         self.stack.addWidget(self._pickup_step())
         self.stack.addWidget(self._validation_step())
         self.stack.addWidget(self._finish_step())
+        self.advanced_toggle = QCheckBox("Advanced manual calibration")
+        right_layout.addWidget(self.advanced_toggle)
         right_layout.addWidget(self.stack, 1)
 
         nav = QHBoxLayout()
@@ -125,7 +134,9 @@ class CalibrationPage(QWidget):
         nav.addWidget(self.back_button)
         nav.addWidget(self.save_step_button)
         nav.addWidget(self.next_button)
-        right_layout.addLayout(nav)
+        self.advanced_nav = QWidget()
+        self.advanced_nav.setLayout(nav)
+        right_layout.addWidget(self.advanced_nav)
         self.page_layout.addWidget(right, 0, 1)
         self.page_layout.setColumnStretch(0, 3)
         self.page_layout.setColumnStretch(1, 2)
@@ -134,6 +145,10 @@ class CalibrationPage(QWidget):
         self.next_button.clicked.connect(lambda: self.set_step(min(len(CALIBRATION_STEPS) - 1, self.step_index + 1)))
         self.save_step_button.clicked.connect(self.save_step_requested.emit)
         self.grid_overlay.toggled.connect(self.grid_overlay_changed.emit)
+        self.advanced_toggle.toggled.connect(self.stack.setVisible)
+        self.advanced_toggle.toggled.connect(self.advanced_nav.setVisible)
+        self.stack.setVisible(False)
+        self.advanced_nav.setVisible(False)
         self.set_step(0)
 
     def set_step(self, index: int) -> None:
@@ -158,6 +173,7 @@ class CalibrationPage(QWidget):
             self.origin_pixel = (x, y)
             self.origin_label.setText(f"Origin pixel: {x}, {y}")
             self._emit_marker_overlay_changed()
+            self.update_wizard_status()
         elif self.step_index == 2:
             if not self.manual_fallback.isChecked():
                 self.mapping_help.setText("Manual clicks are locked. Enable manual click fallback to place markers by clicking.")
@@ -225,6 +241,7 @@ class CalibrationPage(QWidget):
             )
         self._update_mapping_summary(warnings or [])
         self._emit_marker_overlay_changed()
+        self.update_wizard_status()
 
     def set_mapping_detection_status(self, text: str) -> None:
         self.mapping_help.setText(text)
@@ -345,6 +362,9 @@ class CalibrationPage(QWidget):
             else:
                 self.side_table_status.setText(f"Table line first point: {x}, {y}. Click the second point.")
             return
+        if self.side_click_mode.currentData() == "sample_color":
+            self.sample_claw_color_requested.emit(x, y)
+            return
 
         self.side_pending_tip = (x, y)
         self.side_tip_status.setText(f"Pending claw-tip click: {x}, {y}. Press Save Side Sample after checking the current Z.")
@@ -373,14 +393,23 @@ class CalibrationPage(QWidget):
         self._update_side_overlay()
 
     def apply_side_board_detection(self, result: dict) -> None:
+        self.side_board_detection = result
         self.side_board_markers = result.get("markers", []) if isinstance(result.get("markers"), list) else []
         warnings = result.get("warnings", []) if isinstance(result.get("warnings"), list) else []
         warning_text = f" Warnings: {' '.join(warnings)}" if warnings else ""
-        self.side_board_status.setText(f"Monitor board markers detected: {len(self.side_board_markers)}.{warning_text}")
+        board_type = result.get("type", "board")
+        corners = result.get("charucoCornerCount")
+        quality = result.get("quality")
+        if corners is not None:
+            self.side_board_status.setText(f"Monitor board detected: {board_type}, {corners} corners, quality {quality}.{warning_text}")
+        else:
+            self.side_board_status.setText(f"Monitor board markers detected: {len(self.side_board_markers)}.{warning_text}")
+        self.update_wizard_status()
         self._update_side_overlay()
 
     def set_side_camera_status(self, text: str) -> None:
         self.side_camera_status.setText(text)
+        self.update_wizard_status()
 
     def set_side_camera_url(self, stream_url: str) -> None:
         if hasattr(self, "side_stream_url"):
@@ -403,23 +432,40 @@ class CalibrationPage(QWidget):
                 samples=self.side_samples,
                 table_line=self.side_table_line,
                 safety_margin_mm=self.side_safety_margin.value(),
+                z_axis_inverted=True,
             )
         except Exception as error:
             self.side_fit = None
             self.side_fit_status.setText(f"Fit ready: no. {error}")
             return
         fit = self.side_fit.get("fit", {})
+        z_values = table_relative_z_values(float(self.side_fit["z"]), z_axis_inverted=True)
+        self.side_fit.update(z_values)
+        self.side_fit.update(
+            {
+                "minimumClearanceMm": 10.0,
+                "hoverClearanceMm": 60.0,
+                "approachClearanceMm": 15.0,
+                "liftClearanceMm": 90.0,
+            }
+        )
         self.side_fit_status.setText(
             f"Fit ready: yes. visual tableZ {self.side_fit['z']:.1f} mm, "
             f"safety margin {self.side_fit['safetyMarginMm']:.1f} mm, "
             f"{fit.get('pixelsPerRobotMm', 0.0):.2f} px/mm, error {fit.get('errorPx', 0.0):.1f} px."
         )
+        self.validation_summary.setText(
+            f"Table height learned. tableZ {self.side_fit['z']:.1f}, "
+            f"safeHoverZ {self.side_fit['safeHoverZ']:.1f}, "
+            f"lowApproachZ {self.side_fit['lowApproachZ']:.1f}, liftZ {self.side_fit['liftZ']:.1f}."
+        )
+        self.update_wizard_status()
 
     def _update_side_sample_cards(self) -> None:
-        high = max((sample["robotZ"] for sample in self.side_samples), default=None)
-        low = min((sample["robotZ"] for sample in self.side_samples), default=None)
+        high = min((sample["robotZ"] for sample in self.side_samples), default=None)
+        low = max((sample["robotZ"] for sample in self.side_samples), default=None)
         self.side_high_status.setText("High sample saved" if high is not None else "High sample missing")
-        self.side_low_status.setText("Low sample saved" if low is not None and high is not None and low < high else "Low sample missing")
+        self.side_low_status.setText("Low sample saved" if low is not None and high is not None and low > high else "Low sample missing")
         self.side_samples_status.setText(
             "\n".join(
                 f"S{index}: Z {sample['robotZ']:.1f}, px {sample['pixel']['x']}, {sample['pixel']['y']} ({sample.get('source', 'unknown')})"
@@ -437,8 +483,150 @@ class CalibrationPage(QWidget):
                 table_line=self.side_table_line,
                 samples=samples,
                 board_markers=self.side_board_markers,
+                board=self.side_board_detection,
                 fit=self.side_fit,
             )
+            if self.claw_marker:
+                pixel = self.claw_marker.get("pixel", {})
+                self.side_camera_view.set_marker(int(pixel.get("x", 0)), int(pixel.get("y", 0)), f"claw {float(self.claw_marker.get('confidence', 0.0)):.2f}")
+
+    def set_claw_marker_color(self, hsv: dict) -> None:
+        self.claw_marker_hsv = hsv
+        self.claw_color_status.setText(f"Claw marker color sampled: H {hsv['h']:.0f}, S {hsv['s']:.0f}, V {hsv['v']:.0f}")
+        self.update_wizard_status()
+
+    def reset_claw_marker_color(self) -> None:
+        self.claw_marker_hsv = None
+        self.claw_marker = None
+        self.claw_color_status.setText("Claw marker color: not sampled.")
+        self._update_side_overlay()
+        self.update_wizard_status()
+
+    def set_tracked_claw_marker(self, marker: dict | None) -> None:
+        self.claw_marker = marker
+        if marker:
+            pixel = marker.get("pixel", {})
+            self.side_pending_tip = (int(pixel.get("x", 0)), int(pixel.get("y", 0)))
+            self.side_tip_status.setText(f"Claw marker tracked: {pixel.get('x')}, {pixel.get('y')} confidence {float(marker.get('confidence', 0.0)):.2f}")
+        elif self.auto_track_claw.isChecked():
+            self.side_tip_status.setText("Claw marker not tracked. Click the claw tip manually if needed.")
+        self._update_side_overlay()
+        self.update_wizard_status()
+
+    def auto_track_claw_enabled(self) -> bool:
+        return hasattr(self, "auto_track_claw") and self.auto_track_claw.isChecked() and self.claw_marker_hsv is not None
+
+    def update_wizard_status(self, state: dict | None = None) -> None:
+        if not hasattr(self, "wizard_status_labels"):
+            return
+        state = state or {}
+        values = {
+            "top_camera": bool(state.get("top_camera")),
+            "top_markers": len(self.mapping_pixels) == 4,
+            "origin": self.origin_pixel is not None,
+            "side_camera": (hasattr(self, "side_camera_status") and "running" in self.side_camera_status.text().lower()) or bool(state.get("side_camera")),
+            "board": bool(self.side_board_detection),
+            "table_line": self.side_table_line is not None,
+            "claw": bool(self.claw_marker or self.side_pending_tip),
+            "website": bool(state.get("website")),
+            "esp": bool(state.get("esp")),
+            "saved": bool(state.get("saved")),
+        }
+        labels = {
+            "top_camera": "Top camera ready",
+            "top_markers": "Top markers detected",
+            "origin": "Robot base clicked",
+            "side_camera": "Side camera ready",
+            "board": "Monitor board detected",
+            "table_line": "Table line set",
+            "claw": "Claw marker ready",
+            "website": "Website connected",
+            "esp": "ESP pose readable",
+            "saved": "Calibration saved",
+        }
+        for key, label in labels.items():
+            self.wizard_status_labels[key].setText(f"{'[x]' if values[key] else '[ ]'} {label}")
+        self.next_action.setText(self._wizard_next_action(values))
+
+    def _wizard_next_action(self, values: dict[str, bool]) -> str:
+        for key, text in [
+            ("top_camera", "Start Auto Calibration to start the top camera."),
+            ("top_markers", "Place FL, FR, BL, BR markers in view; the wizard will scan them."),
+            ("origin", "Click the center of the robot's rotating base in the top camera view."),
+            ("side_camera", "Start the DroidCam side camera."),
+            ("board", "Move phone or monitor until the side board is fully visible, then detect the board."),
+            ("table_line", "Click two points along the table surface line in the side view."),
+            ("claw", "Sample the bright claw marker color or click the claw tip manually."),
+        ]:
+            if not values[key]:
+                return text
+        if len(self.side_samples) < 3:
+            return "Use the website to move to high, medium, then low safe positions and capture each sample."
+        if self.side_fit:
+            return "Review the validation summary and send calibration to the backend."
+        return "Need a valid side Z fit from the saved samples."
+
+    def _auto_wizard_panel(self) -> QWidget:
+        page = QFrame()
+        page.setObjectName("subPanel")
+        layout = QVBoxLayout(page)
+        title = QLabel("Auto Calibration Wizard")
+        title.setObjectName("sectionTitle")
+        self.next_action = QLabel("Press Start Auto Calibration.")
+        self.next_action.setWordWrap(True)
+        self.start_auto_button = QPushButton("Start Auto Calibration")
+        self.start_auto_button.setObjectName("primaryButton")
+        self.start_auto_button.clicked.connect(self.start_auto_calibration_requested.emit)
+        layout.addWidget(title)
+        layout.addWidget(self.next_action)
+        layout.addWidget(self.start_auto_button)
+
+        grid = QGridLayout()
+        self.wizard_status_labels: dict[str, QLabel] = {}
+        for index, key in enumerate(("top_camera", "top_markers", "origin", "side_camera", "board", "table_line", "claw", "website", "esp", "saved")):
+            label = QLabel("[ ]")
+            label.setWordWrap(True)
+            self.wizard_status_labels[key] = label
+            grid.addWidget(label, index // 2, index % 2)
+        layout.addLayout(grid)
+
+        action_row = QHBoxLayout()
+        self.detect_top_button = QPushButton("Scan Top Markers")
+        self.detect_side_button = QPushButton("Detect Side Board")
+        self.detect_top_button.clicked.connect(self.scan_aruco_requested.emit)
+        self.detect_side_button.clicked.connect(self.detect_side_board_requested.emit)
+        action_row.addWidget(self.detect_top_button)
+        action_row.addWidget(self.detect_side_button)
+        layout.addLayout(action_row)
+
+        claw_row = QHBoxLayout()
+        self.auto_track_claw = QCheckBox("Auto-track claw marker")
+        self.sample_claw_button = QPushButton("Sample claw marker color from click")
+        self.reset_claw_button = QPushButton("Reset marker color")
+        self.sample_claw_button.clicked.connect(lambda: self.side_click_mode.setCurrentIndex(self.side_click_mode.findData("sample_color")))
+        self.reset_claw_button.clicked.connect(self.reset_claw_marker_color)
+        claw_row.addWidget(self.auto_track_claw)
+        claw_row.addWidget(self.sample_claw_button)
+        claw_row.addWidget(self.reset_claw_button)
+        layout.addLayout(claw_row)
+        self.claw_color_status = QLabel("Claw marker color: not sampled.")
+        layout.addWidget(self.claw_color_status)
+
+        sample_row = QHBoxLayout()
+        for text in ("Capture High Sample", "Capture Medium Sample", "Capture Low Sample"):
+            button = QPushButton(text)
+            button.clicked.connect(self.save_side_sample_requested.emit)
+            sample_row.addWidget(button)
+        layout.addLayout(sample_row)
+        self.validation_summary = QLabel("Validation summary will appear after the Z fit is ready.")
+        self.validation_summary.setWordWrap(True)
+        layout.addWidget(self.validation_summary)
+        self.send_calibration_button = QPushButton("Send Calibration To Website/Backend")
+        self.send_calibration_button.setObjectName("primaryButton")
+        self.send_calibration_button.clicked.connect(self.finish_requested.emit)
+        layout.addWidget(self.send_calibration_button)
+        self.update_wizard_status()
+        return page
 
     def set_validation_result(self, text: str) -> None:
         self.validation_result.setText(text)
