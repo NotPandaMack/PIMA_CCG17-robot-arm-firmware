@@ -33,9 +33,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "websiteUrl": "http://raspberrypi.local:8000",
     "espUrl": "http://ESP8266_IP",
     "cameraIndex": 0,
-    "sideCameraUrl": "",
-    "sideCameraRtmpPort": 1935,
-    "sideCameraMjpegPort": 8090,
+    "sideCameraUrl": "http://192.168.1.149:8080/stream.mjpg",
     "motionEnabled": False,
     "continuousSend": False,
     "sendRateHz": 5.0,
@@ -69,8 +67,6 @@ def load_settings(path: Path = SETTINGS_PATH) -> dict[str, Any]:
     settings["espUrl"] = normalize_http_url(settings.get("espUrl", DEFAULT_SETTINGS["espUrl"]), with_port=False)
     settings["cameraIndex"] = int(settings.get("cameraIndex", 0))
     settings["sideCameraUrl"] = str(settings.get("sideCameraUrl", "")).strip()
-    settings["sideCameraRtmpPort"] = int(settings.get("sideCameraRtmpPort", 1935))
-    settings["sideCameraMjpegPort"] = int(settings.get("sideCameraMjpegPort", 8090))
     return settings
 
 

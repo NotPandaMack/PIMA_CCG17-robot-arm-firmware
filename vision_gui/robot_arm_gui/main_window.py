@@ -94,15 +94,12 @@ class MainWindow(QMainWindow):
         self.last_send_at = 0.0
         self.camera_worker: Any | None = None
         self.side_camera_worker: Any | None = None
-        self.rtmp_relay: Any | None = None
-        self.side_capture_url = ""
 
         self._build_ui()
         self._connect_signals()
         self._apply_settings_to_ui()
         self._apply_style()
         self._start_nonblocking_timers()
-        self.start_rtmp_side_relay()
         self.go_to("setup")
         self.update_ui_state()
         QTimer.singleShot(0, self._load_startup_files_async)
@@ -114,7 +111,6 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: Any) -> None:
         self.stop_camera()
         self.stop_side_camera()
-        self.stop_rtmp_side_relay()
         self.settings["lastPage"] = self.current_page_name()
         save_settings(self.settings)
         super().closeEvent(event)
@@ -464,15 +460,29 @@ class MainWindow(QMainWindow):
         if not stream_url:
             self.side_camera_connected = False
             self.connection_page.update_side_camera_status(False, "Side camera URL missing")
-            self.log("Side camera test blocked: RTMP relay URL is missing.")
+            self.log("Side camera test blocked: enter the phone MJPEG stream URL.")
             self.update_ui_state()
             return
-        ready = bool(self.rtmp_relay and self.rtmp_relay.isRunning())
-        self.side_camera_connected = ready
-        message = "RTMP relay ready; paste the URL into Larix" if ready else "RTMP relay is not running"
-        self.connection_page.update_side_camera_status(ready, message)
-        self.log(message)
-        self.update_ui_state()
+        self.connection_page.update_side_camera_status(None, "Side camera testing")
+        self.log("Testing phone side camera stream in the background.")
+
+        def task() -> dict[str, Any]:
+            import cv2
+
+            cap = cv2.VideoCapture(stream_url)
+            try:
+                ok = cap.isOpened()
+                frame_size = None
+                if ok:
+                    frame_ok, frame = cap.read()
+                    ok = bool(frame_ok)
+                    if frame_ok:
+                        frame_size = (frame.shape[1], frame.shape[0])
+                return {"ok": ok, "frameSize": frame_size}
+            finally:
+                cap.release()
+
+        self._run_background(task, self._on_side_camera_test_result, "Side camera test failed", self._on_side_camera_offline)
 
     def _on_side_camera_offline(self, _message: str) -> None:
         self.side_camera_connected = False
@@ -481,10 +491,11 @@ class MainWindow(QMainWindow):
 
     def _on_side_camera_test_result(self, result: dict[str, Any]) -> None:
         self.side_camera_connected = bool(result.get("ok"))
-        if self.side_camera_connected:
-            message = "RTMP relay ready; paste the URL into Larix"
+        frame_size = result.get("frameSize")
+        if self.side_camera_connected and frame_size:
+            message = f"Side camera connected ({frame_size[0]}x{frame_size[1]})"
         else:
-            message = "RTMP relay did not respond"
+            message = "Side camera failed to open"
         self.connection_page.update_side_camera_status(self.side_camera_connected, message)
         self.log(message)
         self.update_ui_state()
@@ -602,17 +613,6 @@ class MainWindow(QMainWindow):
         self.update_ui_state()
 
     def start_side_camera(self, stream_url: str) -> None:
-        if stream_url.startswith("rtmp://"):
-            self.settings["sideCameraUrl"] = stream_url
-            save_settings(self.settings)
-            self.connection_page.side_camera_url.setText(stream_url)
-            self.calibration_page.set_side_camera_url(stream_url)
-            stream_url = self.side_capture_url
-            if not stream_url:
-                self.log("Side camera blocked: RTMP relay capture URL is not ready.")
-                return
-            self.calibration_page.set_side_camera_status("Waiting for Larix to stream to the RTMP URL.")
-            self.connection_page.update_side_camera_status(True, "RTMP relay ready")
         if self.side_camera_worker and self.side_camera_worker.isRunning():
             self.log("Side camera already running.")
             return
@@ -653,34 +653,6 @@ class MainWindow(QMainWindow):
         self.last_side_frame = frame.copy()
         image = QImage(frame.data, w, h, frame.strides[0], QImage.Format_BGR888).copy()
         self.calibration_page.side_camera_view.set_frame(QPixmap.fromImage(image), (w, h))
-
-    def start_rtmp_side_relay(self) -> None:
-        if self.rtmp_relay and self.rtmp_relay.isRunning():
-            return
-        from .rtmp_side_receiver import RtmpSideCameraRelay
-
-        rtmp_port = int(self.settings.get("sideCameraRtmpPort", 1935))
-        mjpeg_port = int(self.settings.get("sideCameraMjpegPort", 8090))
-        self.rtmp_relay = RtmpSideCameraRelay(rtmp_port=rtmp_port, mjpeg_port=mjpeg_port)
-        self.rtmp_relay.ingest_url_ready.connect(self.on_rtmp_ingest_url_ready)
-        self.rtmp_relay.capture_url_ready.connect(self.on_rtmp_capture_url_ready)
-        self.rtmp_relay.relay_status.connect(self.on_side_camera_status)
-        self.rtmp_relay.start()
-
-    def stop_rtmp_side_relay(self) -> None:
-        if self.rtmp_relay:
-            self.rtmp_relay.stop()
-            self.rtmp_relay = None
-
-    def on_rtmp_ingest_url_ready(self, ingest_url: str) -> None:
-        self.settings["sideCameraUrl"] = ingest_url
-        save_settings(self.settings)
-        self.connection_page.side_camera_url.setText(ingest_url)
-        self.calibration_page.set_side_camera_url(ingest_url)
-        self.log(f"Larix RTMP URL ready: {ingest_url}")
-
-    def on_rtmp_capture_url_ready(self, capture_url: str) -> None:
-        self.side_capture_url = capture_url
 
     def on_camera_status(self, online: bool, message: str) -> None:
         self.webcam_tested = True

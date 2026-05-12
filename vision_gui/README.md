@@ -34,15 +34,15 @@ python app.py
 3. Enter the ESP URL, for example `http://192.168.1.60`.
 4. Select the webcam index, usually `0`.
 5. Use Test Pi Connection, Test ESP Connection, and Test Webcam.
-6. Copy the Larix RTMP URL into Larix Broadcaster on the iPhone.
-7. Use Test RTMP Relay to confirm the DesktopGUI receiver is listening.
+6. Enter the iPhone side camera MJPEG URL, for example `http://192.168.1.149:8080/stream.mjpg`.
+7. Use Test Side Camera to confirm the DesktopGUI can read the stream.
 8. Save Settings.
 
 Use Mock Pi and Fake ESP modes to test the workflow without hardware.
 
 The app starts in a startup-safe mode: it does not automatically probe the Pi, ESP, webcam, config, or calibration during window creation. Status begins as Not tested, and hardware checks only run after you press a test button.
 
-The DesktopGUI starts a local RTMP relay for the iPhone side-view camera. In Larix Broadcaster, set the connection URL to the Larix RTMP URL shown on Setup, for example `rtmp://MAIN_LINUX_PC_IP:1935/live/side`.
+The DesktopGUI reads the iPhone side-view camera as an MJPEG/HTTP stream. Enter the phone app URL on Setup, for example `http://192.168.1.149:8080/stream.mjpg`.
 
 ## Beginner Setup Checklist
 
@@ -71,7 +71,7 @@ Full pickup stays locked until hover-only real movement has passed and you confi
 4. Define Robot Origin: click the robot base center projected onto the table.
 5. Four-Point Table Mapping: generate and print the ArUco marker sheet, place IDs 0-3 at FL/FR/BL/BR, then scan markers from the camera to auto-fill pixel centers and robot X/Y coordinates. If ArUco is unavailable, use the QR fallback sheet. Manual click placement is still available behind the manual fallback checkbox.
 6. Workspace Bounds: save the safety limits.
-7. Side-View Table Z Calibration: open the monitor board full-screen on the MacBook, start Larix Broadcaster on the iPhone using the DesktopGUI RTMP URL, then set the table line and save safe claw-height samples. The GUI never lowers the arm automatically.
+7. Side-View Table Z Calibration: open the monitor board full-screen on the MacBook, start the iPhone MJPEG camera app, then set the table line and save safe claw-height samples. The GUI never lowers the arm automatically.
 8. Pickup Pose: manually move to a safe pickup pose and save the current ESP pose.
 9. Validation: click a point and generate a hover preview.
 10. Finish Calibration to save `config/vision_calibration.json` and upload it to the Pi.
