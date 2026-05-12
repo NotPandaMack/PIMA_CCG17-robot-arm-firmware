@@ -11,6 +11,8 @@ from vision_gui.robot_arm_gui.calibration_manager import (
     table_z_calibrated,
     workspace_bounds_saved,
     empty_calibration,
+    fit_side_view_table_z,
+    estimate_table_z,
 )
 
 
@@ -75,6 +77,23 @@ class GuiCalibrationTests(unittest.TestCase):
 
     def test_empty_calibration_does_not_mark_table_z_done(self):
         self.assertFalse(table_z_calibrated(empty_calibration()))
+
+    def test_side_view_visual_fit_calibrates_table_z(self):
+        table_z = fit_side_view_table_z(
+            table_line={"p1": {"x": 100, "y": 400}, "p2": {"x": 500, "y": 400}},
+            samples=[
+                {"robotZ": 80.0, "pixel": {"x": 220, "y": 240}, "source": "ESP pose"},
+                {"robotZ": 40.0, "pixel": {"x": 220, "y": 320}, "source": "website IK draft"},
+            ],
+            safety_margin_mm=8.0,
+        )
+        self.assertEqual("side_view_visual_fit", table_z["method"])
+        self.assertAlmostEqual(0.0, table_z["z"])
+        self.assertAlmostEqual(2.0, table_z["fit"]["pixelsPerRobotMm"])
+        calibration = empty_calibration()
+        calibration["tableZ"] = table_z
+        self.assertTrue(table_z_calibrated(calibration))
+        self.assertEqual(0.0, estimate_table_z(calibration, 10.0, 20.0))
 
 
 if __name__ == "__main__":

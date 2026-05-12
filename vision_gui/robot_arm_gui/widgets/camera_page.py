@@ -40,6 +40,10 @@ class CameraView(QLabel):
         self._grid_enabled = False
         self._grid_homography: list[list[float]] | None = None
         self._grid_workspace: dict | None = None
+        self._side_table_line: dict | None = None
+        self._side_samples: list[dict] = []
+        self._side_board_markers: list[dict] = []
+        self._side_fit: dict | None = None
 
     def set_frame(self, pixmap: QPixmap, frame_size: tuple[int, int]) -> None:
         self._frame_size = frame_size
@@ -68,6 +72,20 @@ class CameraView(QLabel):
         self._grid_enabled = enabled
         self._grid_homography = homography
         self._grid_workspace = workspace
+        self._render_scaled()
+
+    def set_side_overlay(
+        self,
+        *,
+        table_line: dict | None = None,
+        samples: list[dict] | None = None,
+        board_markers: list[dict] | None = None,
+        fit: dict | None = None,
+    ) -> None:
+        self._side_table_line = table_line
+        self._side_samples = list(samples or [])
+        self._side_board_markers = list(board_markers or [])
+        self._side_fit = fit
         self._render_scaled()
 
     def resizeEvent(self, event: object) -> None:
@@ -99,6 +117,8 @@ class CameraView(QLabel):
         display_rect = QRectF(0, 0, scaled.width(), scaled.height())
         if self._grid_enabled and self._grid_homography and self._grid_workspace:
             self._draw_grid(painter, display_rect)
+        if self._side_table_line or self._side_samples or self._side_board_markers or self._side_fit:
+            self._draw_side_overlay(painter, display_rect)
         if self._expected_guides_enabled or self._calibration_markers:
             self._draw_calibration_overlay(painter, display_rect)
         if self._marker:
@@ -232,6 +252,53 @@ class CameraView(QLabel):
             return points
         except Exception:
             return []
+
+    def _draw_side_overlay(self, painter: QPainter, display_rect: QRectF) -> None:
+        for marker in self._side_board_markers:
+            corners = marker.get("corners") if isinstance(marker, dict) else None
+            if not isinstance(corners, list) or len(corners) < 4:
+                continue
+            polygon = QPolygonF()
+            for corner in corners:
+                if isinstance(corner, dict):
+                    polygon.append(self._frame_to_display(float(corner.get("x", 0.0)), float(corner.get("y", 0.0)), display_rect))
+            if polygon.count() >= 4:
+                painter.setPen(QPen(QColor("#fde047"), 3))
+                painter.drawPolygon(polygon)
+
+        if self._side_table_line:
+            p1 = self._side_table_line.get("p1", {})
+            p2 = self._side_table_line.get("p2", {})
+            try:
+                start = self._frame_to_display(float(p1["x"]), float(p1["y"]), display_rect)
+                end = self._frame_to_display(float(p2["x"]), float(p2["y"]), display_rect)
+                painter.setPen(QPen(QColor("#38bdf8"), 3))
+                painter.drawLine(start, end)
+                painter.drawText(QPointF(start.x() + 10, start.y() - 10), "table line")
+            except Exception:
+                pass
+
+        for index, sample in enumerate(self._side_samples, start=1):
+            pixel = sample.get("pixel") if isinstance(sample, dict) else None
+            if not isinstance(pixel, dict):
+                continue
+            try:
+                point = self._frame_to_display(float(pixel["x"]), float(pixel["y"]), display_rect)
+            except Exception:
+                continue
+            painter.setPen(QPen(QColor("#22c55e"), 3))
+            painter.drawEllipse(point, 7, 7)
+            painter.drawLine(QPointF(point.x() - 10, point.y()), QPointF(point.x() + 10, point.y()))
+            painter.drawLine(QPointF(point.x(), point.y() - 10), QPointF(point.x(), point.y() + 10))
+            painter.setPen(QPen(QColor("#ffffff"), 1))
+            painter.drawText(QPointF(min(point.x() + 12, display_rect.width() - 160), max(18, point.y() - 12)), f"S{index} Z {float(sample.get('robotZ', 0.0)):.1f}")
+
+        if self._side_fit:
+            fit = self._side_fit.get("fit", {}) if isinstance(self._side_fit, dict) else {}
+            z = self._side_fit.get("z") if isinstance(self._side_fit, dict) else None
+            if isinstance(z, (int, float)):
+                painter.setPen(QPen(QColor("#f97316"), 2))
+                painter.drawText(QPointF(12, 24), f"visual tableZ {float(z):.1f} mm  fit error {float(fit.get('errorPx', 0.0)):.1f}px")
 
 
 def _grid_values(minimum: float, maximum: float, step: float) -> list[float]:

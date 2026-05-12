@@ -40,6 +40,7 @@ from .calibration_manager import (
 from .calibration_markers import (
     detect_aruco_markers,
     detect_qr_markers,
+    detect_side_board_markers,
     generate_aruco_marker_sheet,
     generate_qr_marker_sheet,
 )
@@ -86,9 +87,11 @@ class MainWindow(QMainWindow):
         self.last_plan: dict[str, Any] | None = None
         self.last_frame_size: tuple[int, int] | None = None
         self.last_camera_frame: Any | None = None
+        self.last_side_frame: Any | None = None
         self.last_target_status = "none"
         self.last_send_at = 0.0
         self.camera_worker: Any | None = None
+        self.side_camera_worker: Any | None = None
 
         self._build_ui()
         self._connect_signals()
@@ -105,6 +108,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: Any) -> None:
         self.stop_camera()
+        self.stop_side_camera()
         self.settings["lastPage"] = self.current_page_name()
         save_settings(self.settings)
         super().closeEvent(event)
@@ -263,6 +267,10 @@ class MainWindow(QMainWindow):
         self.calibration_page.marker_overlay_changed.connect(lambda _markers: self.update_calibration_marker_overlay())
         self.calibration_page.step_changed.connect(lambda _step: self.update_calibration_marker_overlay())
         self.calibration_page.save_touch_requested.connect(self.save_table_touch_point)
+        self.calibration_page.start_side_camera_requested.connect(self.start_side_camera)
+        self.calibration_page.stop_side_camera_requested.connect(self.stop_side_camera)
+        self.calibration_page.detect_side_board_requested.connect(self.detect_side_board)
+        self.calibration_page.save_side_sample_requested.connect(self.save_side_sample)
         self.calibration_page.save_pickup_requested.connect(self.save_pickup_pose_from_esp)
         self.calibration_page.save_step_requested.connect(self.save_calibration_step)
         self.calibration_page.preview_hover_requested.connect(lambda: self.generate_preview(True))
@@ -552,6 +560,40 @@ class MainWindow(QMainWindow):
         self.log("Camera stopped.")
         self.update_ui_state()
 
+    def start_side_camera(self, stream_url: str) -> None:
+        if self.side_camera_worker and self.side_camera_worker.isRunning():
+            self.log("Side camera already running.")
+            return
+        if not stream_url:
+            self.log("Side camera blocked: enter the iPhone IP-camera stream URL.")
+            return
+        from .side_camera_worker import SideCameraWorker
+
+        self.side_camera_worker = SideCameraWorker(stream_url)
+        self.side_camera_worker.frame_ready.connect(self.on_side_camera_frame)
+        self.side_camera_worker.camera_status.connect(self.on_side_camera_status)
+        self.side_camera_worker.start()
+        self.calibration_page.set_side_camera_status("Side camera starting.")
+        self.log("Side camera starting.")
+
+    def stop_side_camera(self) -> None:
+        if self.side_camera_worker:
+            self.side_camera_worker.stop()
+            self.side_camera_worker = None
+        self.calibration_page.set_side_camera_status("Side camera stopped.")
+        self.log("Side camera stopped.")
+
+    def on_side_camera_status(self, online: bool, message: str) -> None:
+        self.calibration_page.set_side_camera_status(message)
+        if not online and "stopped" not in message.lower():
+            self.log(message)
+
+    def on_side_camera_frame(self, frame: Any) -> None:
+        h, w = frame.shape[:2]
+        self.last_side_frame = frame.copy()
+        image = QImage(frame.data, w, h, frame.strides[0], QImage.Format_BGR888).copy()
+        self.calibration_page.side_camera_view.set_frame(QPixmap.fromImage(image), (w, h))
+
     def on_camera_status(self, online: bool, message: str) -> None:
         self.webcam_tested = True
         self.webcam_connected = online
@@ -771,6 +813,25 @@ class MainWindow(QMainWindow):
     def scan_qr_markers(self) -> None:
         self._scan_calibration_markers("QR fallback", detect_qr_markers)
 
+    def detect_side_board(self) -> None:
+        if self.last_side_frame is None:
+            self.log("Side-board detection blocked: start the side camera first.")
+            return
+        frame = self.last_side_frame.copy()
+        self.calibration_page.set_side_camera_status("Scanning side-view monitor board from the latest frame...")
+
+        def task() -> dict[str, Any]:
+            return detect_side_board_markers(frame)
+
+        def on_result(result: dict[str, Any]) -> None:
+            self.calibration_page.apply_side_board_detection(result)
+            markers = result.get("markers", [])
+            warnings = result.get("warnings", [])
+            warning_text = f" Warnings: {' '.join(warnings)}" if warnings else ""
+            self.log(f"Side-board scan found {len(markers)} monitor markers.{warning_text}")
+
+        self._run_background(task, on_result, "Side-board scan failed")
+
     def _scan_calibration_markers(self, marker_type: str, detector: Any) -> None:
         if self.last_camera_frame is None:
             self.log(f"{marker_type} scan blocked: start the camera first.")
@@ -872,6 +933,39 @@ class MainWindow(QMainWindow):
             self.update_ui_state()
 
         self._run_background(task, on_result, "Touch point not saved")
+
+    def save_side_sample(self) -> None:
+        esp_url = self.settings["espUrl"]
+        website_url = self.settings.get("websiteUrl", self.settings["piUrl"])
+        fake = bool(self.settings.get("fakeEsp"))
+
+        def task() -> dict[str, Any]:
+            status: dict[str, Any] = {}
+            try:
+                status = EspClient(esp_url, fake=fake).status()
+            except Exception:
+                status = {}
+            try:
+                manual_response = WebsiteClient(website_url, mock=bool(self.settings.get("mockPi"))).get_manual_control_state()
+                manual_state = manual_response.get("state") if manual_response.get("hasState") else None
+            except Exception:
+                manual_state = None
+            return self._calibration_capture_pose(status, manual_state)
+
+        def on_result(status: dict[str, Any]) -> None:
+            if status.get("espStatus"):
+                self.last_esp_status = status["espStatus"]
+                self.esp_connected = True
+            try:
+                self.calibration_page.add_side_sample(status)
+            except Exception as error:
+                self.log(f"Side sample not saved: {error}")
+                return
+            self.calibration["tableZ"] = self.calibration_page.table_z()
+            self.log(f"Saved side-view table-Z sample from {status.get('source', 'unknown source')}.")
+            self.update_ui_state()
+
+        self._run_background(task, on_result, "Side sample not saved")
 
     def save_pickup_pose_from_esp(self) -> None:
         esp_url = self.settings["espUrl"]

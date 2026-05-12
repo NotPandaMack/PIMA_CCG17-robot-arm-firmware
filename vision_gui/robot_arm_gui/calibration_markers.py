@@ -12,6 +12,8 @@ MARKER_DEFINITIONS: dict[int, dict[str, Any]] = {
     3: {"label": "back-right", "short": "BR", "robot": {"x": 150.0, "y": 260.0}},
 }
 
+SIDE_BOARD_MARKER_IDS = tuple(range(20, 26))
+
 
 LABEL_TO_ID = {definition["label"]: marker_id for marker_id, definition in MARKER_DEFINITIONS.items()}
 
@@ -106,6 +108,37 @@ def detect_aruco_markers(frame: Any) -> dict[str, Any]:
         "warnings": warnings,
         "rejectedCount": len(rejected) if rejected is not None else 0,
     }
+
+
+def detect_side_board_markers(frame: Any) -> dict[str, Any]:
+    try:
+        import cv2
+    except Exception as error:
+        raise RuntimeError(f"OpenCV is not installed: {error}") from error
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    markers: list[dict[str, Any]] = []
+    rejected_count = 0
+    if hasattr(cv2, "aruco"):
+        try:
+            dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+            parameters = _aruco_parameters(cv2)
+            corners, ids, rejected = cv2.aruco.detectMarkers(gray, dictionary, parameters=parameters)
+            rejected_count = len(rejected) if rejected is not None else 0
+            if ids is not None:
+                for index, marker_id_value in enumerate(ids.flatten().tolist()):
+                    marker_id = int(marker_id_value)
+                    if marker_id not in SIDE_BOARD_MARKER_IDS:
+                        continue
+                    marker_corners = corners[index].reshape(4, 2)
+                    markers.append(_side_marker(marker_id, marker_corners, "side-board-aruco"))
+        except Exception:
+            markers = []
+    if not markers:
+        markers = _detect_side_board_blocks(cv2, gray)
+    warnings = []
+    if len(markers) < 3:
+        warnings.append("Need at least three side-board markers visible for a stable board check.")
+    return {"markers": markers, "warnings": warnings, "rejectedCount": rejected_count}
 
 
 def detect_qr_markers(frame: Any) -> dict[str, Any]:
@@ -257,6 +290,63 @@ def _parse_qr_payload(payload_text: str, corners: Any) -> dict[str, Any] | None:
 def _missing_labels(markers: list[dict[str, Any]]) -> list[str]:
     found = {marker.get("label") for marker in markers}
     return [definition["short"] for definition in MARKER_DEFINITIONS.values() if definition["label"] not in found]
+
+
+def _side_marker(marker_id: int, marker_corners: Any, source: str) -> dict[str, Any]:
+    center_x = float(marker_corners[:, 0].mean())
+    center_y = float(marker_corners[:, 1].mean())
+    return {
+        "id": marker_id,
+        "label": f"side-board-{marker_id}",
+        "short": f"S{marker_id}",
+        "pixel": {"x": center_x, "y": center_y},
+        "corners": [{"x": float(x), "y": float(y)} for x, y in marker_corners.tolist()],
+        "source": source,
+    }
+
+
+def _detect_side_board_blocks(cv2: Any, gray: Any) -> list[dict[str, Any]]:
+    import numpy as np
+
+    _threshold, binary = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY_INV)
+    contours, _hierarchy = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    frame_area = float(gray.shape[0] * gray.shape[1])
+    candidates = []
+    for contour in contours:
+        area = float(cv2.contourArea(contour))
+        if area < frame_area * 0.002 or area > frame_area * 0.25:
+            continue
+        perimeter = cv2.arcLength(contour, True)
+        approx = cv2.approxPolyDP(contour, 0.04 * perimeter, True)
+        if len(approx) != 4:
+            continue
+        points = approx.reshape(4, 2).astype("float32")
+        x, y, w, h = cv2.boundingRect(points.astype("int32"))
+        if h <= 0 or w <= 0:
+            continue
+        aspect = w / h
+        if aspect < 0.72 or aspect > 1.28:
+            continue
+        candidates.append((x, y, points))
+    candidates.sort(key=lambda item: (item[1], item[0]))
+    markers = []
+    for offset, (_x, _y, points) in enumerate(candidates[: len(SIDE_BOARD_MARKER_IDS)]):
+        ordered = _order_quad_points(np.array(points, dtype="float32"))
+        markers.append(_side_marker(SIDE_BOARD_MARKER_IDS[offset], ordered, "side-board-visual"))
+    return markers
+
+
+def _order_quad_points(points: Any) -> Any:
+    import numpy as np
+
+    ordered = np.zeros((4, 2), dtype="float32")
+    sums = points.sum(axis=1)
+    diffs = np.diff(points, axis=1).reshape(4)
+    ordered[0] = points[int(np.argmin(sums))]
+    ordered[2] = points[int(np.argmax(sums))]
+    ordered[1] = points[int(np.argmin(diffs))]
+    ordered[3] = points[int(np.argmax(diffs))]
+    return ordered
 
 
 def _short(label: str) -> str:

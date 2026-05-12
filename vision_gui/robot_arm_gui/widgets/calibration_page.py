@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QProgressBar,
     QSpinBox,
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..calibration_markers import MARKER_DEFINITIONS, mapping_warnings
+from ..calibration_manager import fit_side_view_table_z
 from ..config import DEFAULT_WORKSPACE
 from .camera_page import CameraView
 
@@ -28,7 +30,7 @@ CALIBRATION_STEPS = [
     ("Define Robot Origin", "Click the robot base center projected onto the table. This becomes robot coordinate X=0, Y=0."),
     ("Four-Point Table Mapping", "Place each marker, enter its real robot/table X/Y coordinate in millimeters, then click it in the camera image."),
     ("Workspace Bounds", "These safety limits stop the robot from accepting targets outside the reachable box."),
-    ("Table Z Calibration", "Use the website controls to move the claw/tip until it barely touches the table, then save the current control/ESP pose here. The GUI never lowers the arm automatically."),
+    ("Side-View Table Z Calibration", "Display the monitor board full-screen behind the robot, start the iPhone side camera, set the table line, then save safe visual claw-height samples. The GUI never moves or lowers the arm."),
     ("Pickup Pose", "Use the website 2D IK simulator or Specific Joint Adjustment to make a good pickup pose, then save the current control/ESP pose and claw values."),
     ("Calibration Validation", "Click a table point. The app converts it to robot coordinates and can generate a hover preview."),
     ("Finish Calibration", "Save calibration locally and upload it to the Pi server."),
@@ -48,6 +50,10 @@ class CalibrationPage(QWidget):
     step_changed = Signal(int)
     save_step_requested = Signal()
     save_touch_requested = Signal(str)
+    start_side_camera_requested = Signal(str)
+    stop_side_camera_requested = Signal()
+    detect_side_board_requested = Signal()
+    save_side_sample_requested = Signal()
     save_pickup_requested = Signal()
     preview_hover_requested = Signal()
     test_hover_requested = Signal()
@@ -67,6 +73,12 @@ class CalibrationPage(QWidget):
         self.mapping_sources: dict[str, str] = {}
         self.mapping_corners: dict[str, list[dict]] = {}
         self.table_points: list[dict] = []
+        self.side_samples: list[dict] = []
+        self.side_table_line: dict | None = None
+        self.side_pending_tip: tuple[int, int] | None = None
+        self.side_board_markers: list[dict] = []
+        self.side_fit: dict | None = None
+        self._side_table_clicks: list[tuple[int, int]] = []
         self.validation_pixel: tuple[int, int] | None = None
 
         layout = QGridLayout(self)
@@ -313,10 +325,109 @@ class CalibrationPage(QWidget):
         self.table_z_summary.setText(f"Table Z method: {method}. Saved points: {len(self.table_points)} / 4 required plus optional center.")
         self.table_source_status.setText(f"Saved {label} from {status.get('source', 'unknown source')}.")
 
+    def handle_side_click(self, x: int, y: int) -> None:
+        if self.side_click_mode.currentData() == "table":
+            self._side_table_clicks.append((x, y))
+            if len(self._side_table_clicks) >= 2:
+                p1, p2 = self._side_table_clicks[-2], self._side_table_clicks[-1]
+                self.side_table_line = {"p1": {"x": p1[0], "y": p1[1]}, "p2": {"x": p2[0], "y": p2[1]}}
+                self.side_table_status.setText(f"Table line set: ({p1[0]}, {p1[1]}) to ({p2[0]}, {p2[1]}).")
+                self._side_table_clicks = []
+                self._update_side_fit()
+                self._update_side_overlay()
+            else:
+                self.side_table_status.setText(f"Table line first point: {x}, {y}. Click the second point.")
+            return
+
+        self.side_pending_tip = (x, y)
+        self.side_tip_status.setText(f"Pending claw-tip click: {x}, {y}. Press Save Side Sample after checking the current Z.")
+        self._update_side_overlay()
+
+    def add_side_sample(self, status: dict) -> None:
+        if self.side_pending_tip is None:
+            raise ValueError("click the visible claw tip in the side-view image before saving")
+        if not isinstance(status.get("z"), (int, float)):
+            raise ValueError("no valid ESP pose or website IK draft Z is available")
+        x, y = self.side_pending_tip
+        sample = {
+            "robotZ": float(status["z"]),
+            "pixel": {"x": int(x), "y": int(y)},
+            "source": status.get("source", "unknown source"),
+        }
+        if status.get("manualControlState"):
+            sample["manualControlState"] = status["manualControlState"]
+        if status.get("espStatus"):
+            sample["espStatus"] = status["espStatus"]
+        self.side_samples.append(sample)
+        self.side_pending_tip = None
+        self.side_tip_status.setText("Pending claw-tip click: none.")
+        self._update_side_fit()
+        self._update_side_sample_cards()
+        self._update_side_overlay()
+
+    def apply_side_board_detection(self, result: dict) -> None:
+        self.side_board_markers = result.get("markers", []) if isinstance(result.get("markers"), list) else []
+        warnings = result.get("warnings", []) if isinstance(result.get("warnings"), list) else []
+        warning_text = f" Warnings: {' '.join(warnings)}" if warnings else ""
+        self.side_board_status.setText(f"Monitor board markers detected: {len(self.side_board_markers)}.{warning_text}")
+        self._update_side_overlay()
+
+    def set_side_camera_status(self, text: str) -> None:
+        self.side_camera_status.setText(text)
+
     def table_z(self) -> dict:
+        if self.side_fit and self.side_fit.get("method") == "side_view_visual_fit":
+            return self.side_fit
         if len(self.table_points) >= 3:
             return {"method": "plane", "points": self.table_points}
         return {"method": "placeholder", "z": 0.0, "points": self.table_points}
+
+    def _update_side_fit(self) -> None:
+        if not self.side_table_line or len(self.side_samples) < 2:
+            self.side_fit = None
+            self.side_fit_status.setText(f"Fit ready: no. Samples: {len(self.side_samples)} / 2 minimum.")
+            return
+        try:
+            self.side_fit = fit_side_view_table_z(
+                samples=self.side_samples,
+                table_line=self.side_table_line,
+                safety_margin_mm=self.side_safety_margin.value(),
+            )
+        except Exception as error:
+            self.side_fit = None
+            self.side_fit_status.setText(f"Fit ready: no. {error}")
+            return
+        fit = self.side_fit.get("fit", {})
+        self.side_fit_status.setText(
+            f"Fit ready: yes. visual tableZ {self.side_fit['z']:.1f} mm, "
+            f"safety margin {self.side_fit['safetyMarginMm']:.1f} mm, "
+            f"{fit.get('pixelsPerRobotMm', 0.0):.2f} px/mm, error {fit.get('errorPx', 0.0):.1f} px."
+        )
+
+    def _update_side_sample_cards(self) -> None:
+        high = max((sample["robotZ"] for sample in self.side_samples), default=None)
+        low = min((sample["robotZ"] for sample in self.side_samples), default=None)
+        self.side_high_status.setText("High sample saved" if high is not None else "High sample missing")
+        self.side_low_status.setText("Low sample saved" if low is not None and high is not None and low < high else "Low sample missing")
+        self.side_samples_status.setText(
+            "\n".join(
+                f"S{index}: Z {sample['robotZ']:.1f}, px {sample['pixel']['x']}, {sample['pixel']['y']} ({sample.get('source', 'unknown')})"
+                for index, sample in enumerate(self.side_samples, start=1)
+            )
+            or "No side-view samples saved."
+        )
+
+    def _update_side_overlay(self) -> None:
+        if hasattr(self, "side_camera_view"):
+            samples = list(self.side_samples)
+            if self.side_pending_tip:
+                samples.append({"robotZ": 0.0, "pixel": {"x": self.side_pending_tip[0], "y": self.side_pending_tip[1]}, "source": "pending"})
+            self.side_camera_view.set_side_overlay(
+                table_line=self.side_table_line,
+                samples=samples,
+                board_markers=self.side_board_markers,
+                fit=self.side_fit,
+            )
 
     def set_validation_result(self, text: str) -> None:
         self.validation_result.setText(text)
@@ -420,9 +531,80 @@ class CalibrationPage(QWidget):
     def _table_z_step(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        intro = QLabel("Move the arm with the website 2D IK simulator or Specific Joint Adjustment. This GUI only records the current pose.")
+        intro = QLabel("Open the website on the monitor as ?mode=side-calibration-board and put it full screen behind the robot. Move only from the trusted website controls, then record visual claw-tip samples here.")
         intro.setWordWrap(True)
         layout.addWidget(intro)
+
+        stream_box = QFrame()
+        stream_box.setObjectName("subPanel")
+        stream_layout = QVBoxLayout(stream_box)
+        self.side_stream_url = QLineEdit()
+        self.side_stream_url.setPlaceholderText("http://iphone-ip:port/video or rtsp://...")
+        button_row = QHBoxLayout()
+        start_button = QPushButton("Start Side Camera")
+        stop_button = QPushButton("Stop Side Camera")
+        detect_button = QPushButton("Detect Board")
+        start_button.clicked.connect(lambda: self.start_side_camera_requested.emit(self.side_stream_url.text().strip()))
+        stop_button.clicked.connect(self.stop_side_camera_requested.emit)
+        detect_button.clicked.connect(self.detect_side_board_requested.emit)
+        button_row.addWidget(start_button)
+        button_row.addWidget(stop_button)
+        button_row.addWidget(detect_button)
+        self.side_camera_status = QLabel("Side camera stopped.")
+        self.side_camera_status.setWordWrap(True)
+        stream_layout.addWidget(QLabel("Side View / iPhone Camera"))
+        stream_layout.addWidget(self.side_stream_url)
+        stream_layout.addLayout(button_row)
+        stream_layout.addWidget(self.side_camera_status)
+        layout.addWidget(stream_box)
+
+        self.side_camera_view = CameraView()
+        self.side_camera_view.setMinimumSize(480, 270)
+        self.side_camera_view.mapped_clicked.connect(lambda mapped: self.handle_side_click(int(mapped["pixelX"]), int(mapped["pixelY"])))
+        layout.addWidget(self.side_camera_view)
+
+        controls = QFrame()
+        controls.setObjectName("subPanel")
+        controls_layout = QFormLayout(controls)
+        self.side_click_mode = QComboBox()
+        self.side_click_mode.addItem("Click table line points", "table")
+        self.side_click_mode.addItem("Click claw tip sample", "tip")
+        self.side_safety_margin = self._double(8.0, 0.0, 50.0)
+        controls_layout.addRow("Side-view click mode", self.side_click_mode)
+        controls_layout.addRow("Safety margin mm", self.side_safety_margin)
+        layout.addWidget(controls)
+
+        self.side_board_status = QLabel("Monitor board detected: no.")
+        self.side_table_status = QLabel("Table line set: no.")
+        self.side_tip_status = QLabel("Pending claw-tip click: none.")
+        self.side_high_status = QLabel("High sample missing")
+        self.side_low_status = QLabel("Low sample missing")
+        self.side_fit_status = QLabel("Fit ready: no. Samples: 0 / 2 minimum.")
+        for label in (
+            self.side_board_status,
+            self.side_table_status,
+            self.side_tip_status,
+            self.side_high_status,
+            self.side_low_status,
+            self.side_fit_status,
+        ):
+            label.setWordWrap(True)
+            layout.addWidget(label)
+
+        save_side_sample = QPushButton("Save Side Sample From Current ESP Pose")
+        save_side_sample.setObjectName("primaryButton")
+        save_side_sample.clicked.connect(self.save_side_sample_requested.emit)
+        layout.addWidget(save_side_sample)
+        self.side_samples_status = QLabel("No side-view samples saved.")
+        self.side_samples_status.setWordWrap(True)
+        layout.addWidget(self.side_samples_status)
+
+        fallback_label = QLabel("Advanced manual touch fallback")
+        fallback_label.setObjectName("sectionTitle")
+        layout.addWidget(fallback_label)
+        fallback_intro = QLabel("Only use this if visual side-view calibration is unavailable. Move the arm from the website and save current poses; this GUI still never sends lowering commands.")
+        fallback_intro.setWordWrap(True)
+        layout.addWidget(fallback_intro)
         self.table_point_status_labels: dict[str, QLabel] = {}
         self.table_point_source_labels: dict[str, QLabel] = {}
         for label in TABLE_POINTS:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import UTC, datetime, timedelta
 
-from pi_vision_server.calibration import pixel_to_robot_homography
+from pi_vision_server.calibration import get_table_z, pixel_to_robot_homography
 from pi_vision_server.config import VisionConfig, WorkspaceBounds
 from pi_vision_server.planner import build_pick_plan, execute_plan
 from pi_vision_server.validation import ValidationError, validate_target_payload
@@ -121,6 +121,13 @@ class VisionSafetyTests(unittest.TestCase):
     def test_homography_conversion(self):
         result = pixel_to_robot_homography(calibrated(), 120.0, 200.0)
         self.assertEqual((20.0, 250.0), result)
+
+    def test_side_view_table_z_is_used(self):
+        calibration = calibrated(tableZ={"method": "side_view_visual_fit", "z": 12.4, "samples": []})
+        self.assertEqual(12.4, get_table_z(calibration, 35.0, 210.0))
+        plan = build_pick_plan(fresh_target(), VisionConfig(), calibration, hover_only=True)
+        self.assertEqual(12.4, plan["calculated"]["tableZ"])
+        self.assertEqual(92.4, plan["calculated"]["hoverZ"])
 
 
 if __name__ == "__main__":

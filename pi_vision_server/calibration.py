@@ -71,7 +71,11 @@ def calibration_status(calibration: dict[str, Any]) -> CalibrationStatus:
     pickup_pitch = calibration.get("pickupPitchDeg")
     table_z = calibration.get("tableZ") if isinstance(calibration.get("tableZ"), dict) else {}
     table_points = table_z.get("points", [])
-    table_z_status = "calibrated" if isinstance(table_points, list) and len(table_points) >= 3 else "placeholder"
+    table_z_status = "placeholder"
+    if table_z.get("method") == "side_view_visual_fit" and _finite(table_z.get("z")):
+        table_z_status = "calibrated"
+    elif isinstance(table_points, list) and len(table_points) >= 3:
+        table_z_status = "calibrated"
 
     return CalibrationStatus(
         is_calibrated=calibration.get("status") == "calibrated" and has_homography,
@@ -83,6 +87,8 @@ def calibration_status(calibration: dict[str, Any]) -> CalibrationStatus:
 
 def get_table_z(calibration: dict[str, Any], x: float, y: float) -> float:
     table_z = calibration.get("tableZ") if isinstance(calibration.get("tableZ"), dict) else {}
+    if table_z.get("method") == "side_view_visual_fit" and _finite(table_z.get("z")):
+        return float(table_z["z"])
     points = table_z.get("points", [])
     if not isinstance(points, list) or len(points) < 3:
         return 0.0
@@ -169,3 +175,7 @@ def _solve_3x3(matrix: list[list[float]]) -> tuple[float, float, float] | None:
                 rows[row_index][column] -= factor * rows[pivot_index][column]
 
     return rows[0][3], rows[1][3], rows[2][3]
+
+
+def _finite(value: Any) -> bool:
+    return isinstance(value, (int, float)) and math.isfinite(float(value))

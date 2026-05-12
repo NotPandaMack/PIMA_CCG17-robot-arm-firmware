@@ -131,6 +131,8 @@ def table_z_calibrated(calibration: dict[str, Any]) -> bool:
     table_z = calibration.get("tableZ")
     if not isinstance(table_z, dict):
         return False
+    if table_z.get("method") == "side_view_visual_fit" and _finite(table_z.get("z")):
+        return True
     points = table_z.get("points")
     usable = [point for point in points or [] if isinstance(point, dict) and all(_finite(point.get(k)) for k in ("x", "y", "z"))]
     if len(usable) >= 3:
@@ -218,6 +220,8 @@ def estimate_table_z(calibration: dict[str, Any], x: float, y: float) -> float:
     import numpy as np
 
     table_z = calibration.get("tableZ") if isinstance(calibration.get("tableZ"), dict) else {}
+    if table_z.get("method") == "side_view_visual_fit" and _finite(table_z.get("z")):
+        return float(table_z["z"])
     points = table_z.get("points", [])
     usable = []
     for point in points if isinstance(points, list) else []:
@@ -229,6 +233,76 @@ def estimate_table_z(calibration: dict[str, Any], x: float, y: float) -> float:
     values = np.array([pz for _, _, pz in usable], dtype=np.float64)
     a, b, c = np.linalg.lstsq(matrix, values, rcond=None)[0]
     return float((a * x) + (b * y) + c)
+
+
+def fit_side_view_table_z(
+    *,
+    samples: list[dict[str, Any]],
+    table_line: dict[str, Any],
+    safety_margin_mm: float = 8.0,
+) -> dict[str, Any]:
+    usable: list[tuple[float, float, float]] = []
+    for sample in samples:
+        if not isinstance(sample, dict):
+            continue
+        pixel = sample.get("pixel")
+        if not isinstance(pixel, dict):
+            continue
+        if _finite(sample.get("robotZ")) and _finite(pixel.get("x")) and _finite(pixel.get("y")):
+            usable.append((float(sample["robotZ"]), float(pixel["x"]), float(pixel["y"])))
+    if len(usable) < 2:
+        raise ValueError("at least two side-view samples are required")
+
+    p1 = table_line.get("p1") if isinstance(table_line, dict) else None
+    p2 = table_line.get("p2") if isinstance(table_line, dict) else None
+    if not isinstance(p1, dict) or not isinstance(p2, dict):
+        raise ValueError("table line requires p1 and p2")
+    if not all(_finite(point.get(axis)) for point in (p1, p2) for axis in ("x", "y")):
+        raise ValueError("table line points must be finite")
+    x1, y1 = float(p1["x"]), float(p1["y"])
+    x2, y2 = float(p2["x"]), float(p2["y"])
+    if abs(x2 - x1) < 1e-6 and abs(y2 - y1) < 1e-6:
+        raise ValueError("table line points must be distinct")
+
+    deltas = [_table_line_y_at_x(x, x1, y1, x2, y2) - y for _robot_z, x, y in usable]
+    if max(deltas) - min(deltas) < 1e-6:
+        raise ValueError("side-view samples need distinct visual heights")
+
+    n = float(len(usable))
+    sum_delta = sum(deltas)
+    sum_z = sum(robot_z for robot_z, _x, _y in usable)
+    sum_delta_delta = sum(delta * delta for delta in deltas)
+    sum_delta_z = sum(delta * robot_z for delta, (robot_z, _x, _y) in zip(deltas, usable, strict=False))
+    denom = (n * sum_delta_delta) - (sum_delta * sum_delta)
+    if abs(denom) < 1e-9:
+        raise ValueError("side-view fit is singular")
+
+    slope_robot_mm_per_px = ((n * sum_delta_z) - (sum_delta * sum_z)) / denom
+    if not math.isfinite(slope_robot_mm_per_px) or slope_robot_mm_per_px <= 0.0:
+        raise ValueError("side-view samples must place higher robot Z farther above the table line")
+    intercept_table_z = (sum_z - (slope_robot_mm_per_px * sum_delta)) / n
+    pixels_per_robot_mm = 1.0 / slope_robot_mm_per_px
+    predicted_deltas = [(robot_z - intercept_table_z) * pixels_per_robot_mm for robot_z, _x, _y in usable]
+    error_px = sum(abs(actual - predicted) for actual, predicted in zip(deltas, predicted_deltas, strict=False)) / len(deltas)
+
+    return {
+        "method": "side_view_visual_fit",
+        "z": float(intercept_table_z),
+        "safetyMarginMm": float(safety_margin_mm),
+        "samples": samples,
+        "tableLine": table_line,
+        "fit": {
+            "pixelsPerRobotMm": float(pixels_per_robot_mm),
+            "errorPx": float(error_px),
+        },
+    }
+
+
+def _table_line_y_at_x(x: float, x1: float, y1: float, x2: float, y2: float) -> float:
+    if abs(x2 - x1) < 1e-6:
+        return (y1 + y2) / 2.0
+    t = (x - x1) / (x2 - x1)
+    return y1 + (t * (y2 - y1))
 
 
 def convert_pixel(calibration: dict[str, Any], x: float, y: float) -> tuple[float, float] | None:
