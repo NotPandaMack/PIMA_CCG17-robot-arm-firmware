@@ -18,6 +18,7 @@ from vision_gui.robot_arm_gui.calibration_markers import detect_side_board_marke
 from vision_gui.robot_arm_gui.realsense_depth import (
     deproject_pixel_to_point_mm,
     fit_realsense_table_z,
+    fit_realsense_table_z_two_sample,
     fit_table_plane_from_depth,
     height_above_table_mm,
 )
@@ -132,6 +133,56 @@ class GuiCalibrationTests(unittest.TestCase):
         calibration["tableZ"] = table_z
         self.assertTrue(table_z_calibrated(calibration))
         self.assertEqual(120.0, estimate_table_z(calibration, 10.0, 20.0))
+
+    def test_two_sample_fit_inverted(self):
+        # Inverted convention: physically higher arm = smaller Z number
+        # LOW anchor: arm near table, high Z number (e.g. 140), small height (20mm)
+        # HIGH anchor: arm far from table, small Z number (e.g. 80), large height (80mm)
+        # tableZ estimate = low_z + low_h = 140 + 20 = 160 (or high_z + high_h = 80 + 80 = 160)
+        low = {"robotZ": 140.0, "heightAboveTableMm": 20.0}
+        high = {"robotZ": 80.0, "heightAboveTableMm": 80.0}
+        result = fit_realsense_table_z_two_sample(low_anchor=low, high_anchor=high)
+        self.assertEqual("realsense_two_sample", result["method"])
+        self.assertTrue(result["zAxisInverted"])
+        self.assertAlmostEqual(160.0, result["z"], delta=0.01)
+        self.assertAlmostEqual(0.0, result["fit"]["errorMm"], delta=0.01)
+
+    def test_two_sample_fit_not_inverted(self):
+        # Non-inverted: physically higher arm = larger Z number
+        # LOW anchor: near table, small Z (e.g. 20), small height (20mm)
+        # HIGH anchor: far from table, large Z (e.g. 80), large height (80mm)
+        # tableZ estimate = low_z - low_h = 20 - 20 = 0 (or high_z - high_h = 80 - 80 = 0)
+        low = {"robotZ": 20.0, "heightAboveTableMm": 20.0}
+        high = {"robotZ": 80.0, "heightAboveTableMm": 80.0}
+        result = fit_realsense_table_z_two_sample(low_anchor=low, high_anchor=high)
+        self.assertEqual("realsense_two_sample", result["method"])
+        self.assertFalse(result["zAxisInverted"])
+        self.assertAlmostEqual(0.0, result["z"], delta=0.01)
+
+    def test_two_sample_rejects_insufficient_spread(self):
+        low = {"robotZ": 140.0, "heightAboveTableMm": 20.0}
+        high = {"robotZ": 138.0, "heightAboveTableMm": 22.0}
+        with self.assertRaises(ValueError):
+            fit_realsense_table_z_two_sample(low_anchor=low, high_anchor=high)
+
+    def test_multi_sample_outlier_rejection(self):
+        # 7 good samples clustered around tableZ=120, plus 2 gross outliers
+        good_samples = [
+            {"robotZ": 100.0 + i * 5, "heightAboveTableMm": 20.0 - i * 5}
+            for i in range(7)
+        ]
+        bad_samples = [
+            {"robotZ": 100.0, "heightAboveTableMm": 0.01},   # near-zero height
+            {"robotZ": 100.0, "heightAboveTableMm": 265.0},  # absurdly large height
+        ]
+        dummy_plane = {"plane": {"a": 0.0, "b": 0.0, "c": 1.0, "d": -1000.0}}
+        result = fit_realsense_table_z(
+            samples=good_samples + bad_samples,
+            table_plane=dummy_plane,
+            z_axis_inverted=True,
+        )
+        self.assertAlmostEqual(120.0, result["z"], delta=2.0)
+        self.assertLess(result["fit"]["errorMm"], 5.0)
 
     @unittest.skipUnless(HAS_OPENCV, "OpenCV and NumPy are not installed")
     def test_charuco_side_board_detection(self):

@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 from ..calibration_markers import MARKER_DEFINITIONS, mapping_warnings
 from ..calibration_manager import fit_side_view_table_z, table_relative_z_values
 from ..config import DEFAULT_SIDE_CAMERA_URL, DEFAULT_WORKSPACE
-from ..realsense_depth import fit_realsense_table_z
+from ..realsense_depth import fit_realsense_table_z, fit_realsense_table_z_two_sample
 from .camera_page import CameraView
 
 
@@ -58,7 +58,7 @@ class CalibrationPage(QWidget):
     detect_side_board_requested = Signal()
     save_side_sample_requested = Signal()
     learn_realsense_table_requested = Signal()
-    save_realsense_anchor_requested = Signal()
+    save_realsense_anchor_requested = Signal(str)
     start_auto_calibration_requested = Signal()
     sample_claw_color_requested = Signal(int, int)
     save_pickup_requested = Signal()
@@ -88,6 +88,8 @@ class CalibrationPage(QWidget):
         self.side_fit: dict | None = None
         self.realsense_table_plane: dict | None = None
         self.realsense_samples: list[dict] = []
+        self.realsense_low_anchor: dict | None = None
+        self.realsense_high_anchor: dict | None = None
         self.realsense_fit: dict | None = None
         self.depth_pending_tip: tuple[int, int] | None = None
         self.depth_metadata: dict | None = None
@@ -452,7 +454,7 @@ class CalibrationPage(QWidget):
             self.side_stream_url.setText(stream_url)
 
     def table_z(self) -> dict:
-        if self.realsense_fit and self.realsense_fit.get("method") == "realsense_depth_plane_anchor_fit":
+        if self.realsense_fit and self.realsense_fit.get("method") in {"realsense_depth_plane_anchor_fit", "realsense_two_sample"}:
             return self.realsense_fit
         if self.side_fit and self.side_fit.get("method") == "side_view_visual_fit":
             return self.side_fit
@@ -479,7 +481,7 @@ class CalibrationPage(QWidget):
         self._update_realsense_fit()
         self.update_wizard_status()
 
-    def add_realsense_sample(self, status: dict, sample_info: dict) -> None:
+    def add_realsense_sample(self, status: dict, sample_info: dict, role: str = "anchor") -> None:
         if self.depth_pending_tip is None:
             raise ValueError("click the visible claw tip in the D415 color view before saving")
         if not isinstance(status.get("z"), (int, float)):
@@ -497,31 +499,68 @@ class CalibrationPage(QWidget):
             sample["manualControlState"] = status["manualControlState"]
         if status.get("espStatus"):
             sample["espStatus"] = status["espStatus"]
-        self.realsense_samples.append(sample)
+        if role == "low_anchor":
+            self.realsense_low_anchor = sample
+        elif role == "high_anchor":
+            self.realsense_high_anchor = sample
+        else:
+            self.realsense_samples.append(sample)
         self.depth_pending_tip = None
         self.depth_tip_status.setText("Pending D415 claw-tip click: none.")
         self.camera_view.set_marker(None, None)
         self._update_realsense_fit()
 
     def _update_realsense_fit(self) -> None:
-        if not self.realsense_table_plane or len(self.realsense_samples) < 3:
+        has_two_sample = self.realsense_low_anchor is not None and self.realsense_high_anchor is not None
+        has_multi_sample = self.realsense_table_plane is not None and len(self.realsense_samples) >= 3
+
+        if not self.realsense_table_plane and not has_two_sample:
             self.realsense_fit = None
-            self.depth_fit_status.setText(f"Table height learned: no. Samples: {len(self.realsense_samples)} / 3 minimum.")
+            low_ok = "✓" if self.realsense_low_anchor else "—"
+            high_ok = "✓" if self.realsense_high_anchor else "—"
+            self.depth_fit_status.setText(f"Table height: not yet. LOW anchor: {low_ok}  HIGH anchor: {high_ok}")
             self._update_realsense_sample_cards()
             return
-        try:
-            self.realsense_fit = fit_realsense_table_z(
-                samples=self.realsense_samples,
-                table_plane=self.realsense_table_plane,
-                safety_margin_mm=self.side_safety_margin.value(),
-                z_axis_inverted=True,
+
+        # Two-sample method takes priority (no table plane needed, auto-detects z_axis_inverted)
+        if has_two_sample:
+            try:
+                self.realsense_fit = fit_realsense_table_z_two_sample(
+                    low_anchor=self.realsense_low_anchor,
+                    high_anchor=self.realsense_high_anchor,
+                    safety_margin_mm=self.side_safety_margin.value(),
+                )
+            except Exception as error:
+                self.realsense_fit = None
+                self.depth_fit_status.setText(f"Table height: two-sample fit failed. {error}")
+                self._update_realsense_sample_cards()
+                return
+        elif has_multi_sample:
+            try:
+                self.realsense_fit = fit_realsense_table_z(
+                    samples=self.realsense_samples,
+                    table_plane=self.realsense_table_plane,
+                    safety_margin_mm=self.side_safety_margin.value(),
+                    z_axis_inverted=True,
+                )
+            except Exception as error:
+                self.realsense_fit = None
+                self.depth_fit_status.setText(f"Table height learned: no. {error}")
+                self._update_realsense_sample_cards()
+                return
+        else:
+            self.realsense_fit = None
+            low_ok = "✓" if self.realsense_low_anchor else "—"
+            high_ok = "✓" if self.realsense_high_anchor else "—"
+            self.depth_fit_status.setText(
+                f"Table height: not yet. LOW anchor: {low_ok}  HIGH anchor: {high_ok}  "
+                f"(or add {max(0, 3 - len(self.realsense_samples))} more multi-samples)"
             )
-        except Exception as error:
-            self.realsense_fit = None
-            self.depth_fit_status.setText(f"Table height learned: no. {error}")
             self._update_realsense_sample_cards()
             return
-        z_values = table_relative_z_values(float(self.realsense_fit["z"]), z_axis_inverted=True)
+
+        z_axis_inverted = bool(self.realsense_fit.get("zAxisInverted", True))
+        z_values = table_relative_z_values(float(self.realsense_fit["z"]), z_axis_inverted=z_axis_inverted)
         self.realsense_fit.update(z_values)
         self.realsense_fit.update(
             {
@@ -531,26 +570,45 @@ class CalibrationPage(QWidget):
                 "liftClearanceMm": 90.0,
             }
         )
+        error_mm = float(self.realsense_fit.get("fit", {}).get("errorMm", 0.0))
+        method_label = "two-sample" if self.realsense_fit.get("method") == "realsense_two_sample" else "multi-sample"
+        warning = f"  ⚠ error {error_mm:.1f} mm — recapture anchors" if error_mm > 5.0 else ""
         self.depth_fit_status.setText(
-            f"Table height learned: yes. tableZ {self.realsense_fit['z']:.1f} mm, "
-            f"error {float(self.realsense_fit.get('fit', {}).get('errorMm', 0.0)):.1f} mm."
+            f"Table height learned ({method_label}): tableZ {self.realsense_fit['z']:.1f} mm, "
+            f"hoverZ {self.realsense_fit['safeHoverZ']:.1f} mm, error {error_mm:.1f} mm.{warning}"
         )
         self.validation_summary.setText(
-            f"D415 table height learned. tableZ {self.realsense_fit['z']:.1f}, "
+            f"D415 table height ({method_label}). tableZ {self.realsense_fit['z']:.1f}, "
             f"safeHoverZ {self.realsense_fit['safeHoverZ']:.1f}, "
-            f"lowApproachZ {self.realsense_fit['lowApproachZ']:.1f}, liftZ {self.realsense_fit['liftZ']:.1f}."
+            f"lowApproachZ {self.realsense_fit['lowApproachZ']:.1f}, liftZ {self.realsense_fit['liftZ']:.1f}, "
+            f"zAxisInverted {z_axis_inverted}."
         )
         self._update_realsense_sample_cards()
         self.update_wizard_status()
 
     def _update_realsense_sample_cards(self) -> None:
-        self.depth_samples_status.setText(
-            "\n".join(
-                f"S{index}: robotZ {sample['robotZ']:.1f}, height {sample['heightAboveTableMm']:.1f} mm, px {sample['pixel']['x']}, {sample['pixel']['y']}"
-                for index, sample in enumerate(self.realsense_samples, start=1)
-            )
-            or "No D415 depth anchor samples saved."
-        )
+        lines = []
+        if self.realsense_low_anchor:
+            s = self.realsense_low_anchor
+            lines.append(f"LOW:  robotZ {s['robotZ']:.1f}, height {s['heightAboveTableMm']:.1f} mm")
+        else:
+            lines.append("LOW:  — (not captured)")
+        if self.realsense_high_anchor:
+            s = self.realsense_high_anchor
+            lines.append(f"HIGH: robotZ {s['robotZ']:.1f}, height {s['heightAboveTableMm']:.1f} mm")
+        else:
+            lines.append("HIGH: — (not captured)")
+        for index, sample in enumerate(self.realsense_samples, start=1):
+            lines.append(f"S{index}: robotZ {sample['robotZ']:.1f}, height {sample['heightAboveTableMm']:.1f} mm")
+        self.depth_samples_status.setText("\n".join(lines) if lines else "No D415 depth anchors saved.")
+
+    def _clear_realsense_anchors(self) -> None:
+        self.realsense_low_anchor = None
+        self.realsense_high_anchor = None
+        self.realsense_samples = []
+        self.realsense_fit = None
+        self._update_realsense_fit()
+        self.update_wizard_status()
 
     def _update_side_fit(self) -> None:
         if not self.side_table_line or len(self.side_samples) < 3:
@@ -687,7 +745,7 @@ class CalibrationPage(QWidget):
             ("top_markers", "Put the four ArUco papers flat on the table in the 2D webcam view, then scan top markers."),
             ("origin", "In the Top 2D Webcam tab, click the exact center of the robot's rotating base."),
             ("plane", "In the D415 views, make sure the desk surface fills most of the frame, then click Learn Table Plane."),
-            ("anchors", "Use the website to move the claw to high, medium, and low safe heights. In the D415 Color tab, click the visible claw tip and capture each sample."),
+            ("anchors", "Use the website to move the claw to a HIGH safe height and a LOW near-table height. In the D415 Color tab, click the claw tip and capture each anchor."),
         ]:
             if not values[key]:
                 return text
@@ -751,12 +809,13 @@ class CalibrationPage(QWidget):
         self.depth_fit_status = QLabel("Table height learned: no. Samples: 0 / 3 minimum.")
         self.depth_fit_status.setWordWrap(True)
         d415_instructions = QLabel(
-            "D415 depth steps:\n"
-            "1. Aim the D415 down at an angle so it sees the desk surface and the claw.\n"
-            "2. Click Learn Table Plane while the claw is not blocking the desk.\n"
-            "3. Move the claw only from the website controls.\n"
-            "4. For high, medium, and low safe positions, click the claw tip in the D415 Color tab, then capture the sample.\n"
-            "Never touch the table during this calibration."
+            "D415 depth steps (two-anchor method):\n"
+            "1. Aim the D415 down at an angle so it sees the desk and the claw.\n"
+            "2. Move the arm HIGH (safe height above table) from the website controls.\n"
+            "3. In the D415 Color tab, click the visible claw tip, then click Capture HIGH Anchor.\n"
+            "4. Move the arm LOW (near table but NOT touching) from the website controls.\n"
+            "5. Click the claw tip again, then click Capture LOW Anchor.\n"
+            "The two-anchor method auto-detects z_axis_inverted — no table plane needed."
         )
         d415_instructions.setWordWrap(True)
         depth_layout.addWidget(QLabel("RealSense D415 Angled Depth"))
@@ -767,12 +826,17 @@ class CalibrationPage(QWidget):
         depth_layout.addWidget(self.depth_tip_status)
         depth_layout.addWidget(self.depth_fit_status)
         depth_sample_row = QHBoxLayout()
-        for text in ("Capture High Depth Sample", "Capture Medium Depth Sample", "Capture Low Depth Sample"):
-            button = QPushButton(text)
-            button.clicked.connect(self.save_realsense_anchor_requested.emit)
-            depth_sample_row.addWidget(button)
+        low_btn = QPushButton("Capture LOW Anchor\n(arm near table)")
+        high_btn = QPushButton("Capture HIGH Anchor\n(arm raised high)")
+        clear_anchors_btn = QPushButton("Clear Anchors")
+        low_btn.clicked.connect(lambda: self.save_realsense_anchor_requested.emit("low_anchor"))
+        high_btn.clicked.connect(lambda: self.save_realsense_anchor_requested.emit("high_anchor"))
+        clear_anchors_btn.clicked.connect(self._clear_realsense_anchors)
+        depth_sample_row.addWidget(low_btn)
+        depth_sample_row.addWidget(high_btn)
+        depth_sample_row.addWidget(clear_anchors_btn)
         depth_layout.addLayout(depth_sample_row)
-        self.depth_samples_status = QLabel("No D415 depth anchor samples saved.")
+        self.depth_samples_status = QLabel("No D415 depth anchors saved.")
         self.depth_samples_status.setWordWrap(True)
         depth_layout.addWidget(self.depth_samples_status)
         layout.addWidget(depth_box)

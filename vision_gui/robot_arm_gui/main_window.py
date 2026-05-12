@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -992,10 +993,17 @@ class MainWindow(QMainWindow):
         )
 
     def _default_target_z(self) -> float:
-        if self.last_esp_status and isinstance(self.last_esp_status.get("z"), (int, float)):
-            return float(self.last_esp_status["z"])
-        if isinstance(self.calibration.get("hoverZ"), (int, float)):
-            return float(self.calibration["hoverZ"])
+        # Use calibrated safe hover height — never the current arm Z, which would
+        # send the arm to its present height at a new XY and cause a desk collision.
+        for key in ("safeHoverZ", "hoverZ"):
+            val = self.calibration.get(key)
+            if isinstance(val, (int, float)) and math.isfinite(float(val)):
+                return float(val)
+        table_z_dict = self.calibration.get("tableZ")
+        if isinstance(table_z_dict, dict):
+            val = table_z_dict.get("safeHoverZ")
+            if isinstance(val, (int, float)) and math.isfinite(float(val)):
+                return float(val)
         return 80.0
 
     def _default_target_pitch(self) -> float:
@@ -1170,7 +1178,7 @@ class MainWindow(QMainWindow):
 
         self._run_background(task, on_result, "D415 table plane learning failed")
 
-    def save_realsense_anchor_sample(self) -> None:
+    def save_realsense_anchor_sample(self, role: str = "anchor") -> None:
         if self.calibration_page.depth_pending_tip is None:
             self.log("D415 sample blocked: click the visible claw tip in the color view first.")
             return
@@ -1219,13 +1227,14 @@ class MainWindow(QMainWindow):
                 self.last_esp_status = status["espStatus"]
                 self.esp_connected = True
             try:
-                self.calibration_page.add_realsense_sample(status, sample_info)
+                self.calibration_page.add_realsense_sample(status, sample_info, role)
             except Exception as error:
                 self.log(f"D415 sample not saved: {error}")
                 return
             self.calibration["tableZ"] = self.calibration_page.table_z()
+            role_label = role.replace("_", " ")
             self.log(
-                f"Saved D415 depth anchor: robotZ {float(status.get('z', 0.0)):.1f}, "
+                f"Saved D415 depth anchor ({role_label}): robotZ {float(status.get('z', 0.0)):.1f}, "
                 f"height {height_mm:.1f} mm from {status.get('source', 'unknown source')}."
             )
             self.update_ui_state()
@@ -1479,7 +1488,8 @@ class MainWindow(QMainWindow):
             return
         table_z = calibration.get("tableZ") if isinstance(calibration.get("tableZ"), dict) else {}
         if isinstance(table_z.get("z"), (int, float)):
-            z_values = table_relative_z_values(float(table_z["z"]), z_axis_inverted=True)
+            z_axis_inverted = bool(table_z.get("zAxisInverted", True))
+            z_values = table_relative_z_values(float(table_z["z"]), z_axis_inverted=z_axis_inverted)
             calibration.update(z_values)
             calibration["hoverZ"] = z_values["safeHoverZ"]
             calibration["grabOffsetZ"] = z_values["lowApproachZ"]
@@ -1523,7 +1533,7 @@ class MainWindow(QMainWindow):
             "safeHoverZ": float(self.calibration.get("hoverClearanceMm", 60.0)),
             "grabOffsetZ": float(self.calibration.get("approachClearanceMm", 15.0)),
             "liftZ": float(self.calibration.get("liftClearanceMm", 90.0)),
-            "zAxisInverted": True,
+            "zAxisInverted": bool((self.calibration.get("tableZ") or {}).get("zAxisInverted", True)),
             "closeClawDegrees": int(self.calibration.get("clawClosedValue") or 55),
         }
         pi_url = self.settings["piUrl"]

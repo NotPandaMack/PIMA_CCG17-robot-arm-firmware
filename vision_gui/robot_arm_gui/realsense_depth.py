@@ -134,6 +134,20 @@ def fit_realsense_table_z(
         estimates = [robot_z + height for robot_z, height in usable]
     else:
         estimates = [robot_z - height for robot_z, height in usable]
+
+    # MAD-based outlier rejection — protects against bad depth readings (e.g. height ≈ 0 or 265 mm)
+    if len(estimates) >= 3:
+        sorted_est = sorted(estimates)
+        med = sorted_est[len(sorted_est) // 2]
+        mad = sorted([abs(e - med) for e in estimates])[len(estimates) // 2]
+        # 3-MAD cutoff, floor of 5 mm to avoid over-filtering tight clusters
+        cutoff = max(5.0, mad * 3.0)
+        filtered_pairs = [(rz, h) for (rz, h), e in zip(usable, estimates) if abs(e - med) <= cutoff]
+        filtered_estimates = [e for e in estimates if abs(e - med) <= cutoff]
+        if len(filtered_pairs) >= 2:
+            usable = filtered_pairs
+            estimates = filtered_estimates
+
     table_z = sum(estimates) / len(estimates)
     error_mm = sum(abs(estimate - table_z) for estimate in estimates) / len(estimates)
     return {
@@ -145,6 +159,70 @@ def fit_realsense_table_z(
         "tablePlane": table_plane,
         "fit": {"errorMm": float(error_mm), "sampleCount": len(usable)},
     }
+
+
+def fit_realsense_table_z_two_sample(
+    *,
+    low_anchor: dict[str, Any],
+    high_anchor: dict[str, Any],
+    safety_margin_mm: float = 10.0,
+) -> dict[str, Any]:
+    """Fit table Z from exactly two anchor positions.
+
+    low_anchor: sample captured with the arm near the table
+    high_anchor: sample captured with the arm raised high above the table
+
+    z_axis_inverted is auto-detected from the sign relationship between
+    delta_robot_z and delta_height_above_table:
+    - Inverted (higher Z number = physically lower): physically high arm has SMALLER robot Z
+      → delta_robot_z (high - low) < 0 while delta_height > 0 → opposite signs
+    - Not inverted: delta_robot_z > 0 and delta_height > 0 → same signs
+    """
+    low_robot_z, low_h = _extract_anchor_values(low_anchor)
+    high_robot_z, high_h = _extract_anchor_values(high_anchor)
+
+    delta_robot_z = high_robot_z - low_robot_z
+    delta_height = high_h - low_h
+
+    if abs(delta_height) < 15.0:
+        raise ValueError(f"anchors need at least 15 mm of height spread (got {abs(delta_height):.1f} mm) — move arm further from table for HIGH anchor")
+    if abs(delta_robot_z) < 5.0:
+        raise ValueError(f"anchors need at least 5 mm of Z change in robot coordinates (got {abs(delta_robot_z):.1f} mm)")
+
+    z_axis_inverted = (delta_robot_z * delta_height) < 0
+
+    if z_axis_inverted:
+        est_low = low_robot_z + low_h
+        est_high = high_robot_z + high_h
+    else:
+        est_low = low_robot_z - low_h
+        est_high = high_robot_z - high_h
+
+    table_z = (est_low + est_high) / 2.0
+    error_mm = abs(est_high - est_low) / 2.0
+    return {
+        "method": "realsense_two_sample",
+        "zAxisInverted": bool(z_axis_inverted),
+        "z": float(table_z),
+        "safetyMarginMm": float(safety_margin_mm),
+        "lowAnchor": low_anchor,
+        "highAnchor": high_anchor,
+        "fit": {
+            "errorMm": float(error_mm),
+            "estLowMm": float(est_low),
+            "estHighMm": float(est_high),
+        },
+    }
+
+
+def _extract_anchor_values(anchor: dict[str, Any]) -> tuple[float, float]:
+    robot_z = anchor.get("robotZ")
+    height_mm = anchor.get("heightAboveTableMm")
+    if not isinstance(robot_z, (int, float)) or not isinstance(height_mm, (int, float)):
+        raise ValueError("anchor is missing robotZ or heightAboveTableMm")
+    if not math.isfinite(float(robot_z)) or not math.isfinite(float(height_mm)):
+        raise ValueError("anchor robotZ or heightAboveTableMm is not finite")
+    return float(robot_z), abs(float(height_mm))
 
 
 def _marker_polygon(marker_points: list[dict[str, Any]]) -> list[tuple[int, int]]:
