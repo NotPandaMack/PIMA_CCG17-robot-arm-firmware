@@ -1203,10 +1203,11 @@ class MainWindow(QMainWindow):
             _block("learn the table plane first (click Learn Table Plane while the claw is out of the way), then capture anchors.")
             return
         _plane_rms = float(self.calibration_page.realsense_table_plane.get("rmsErrorMm", 0.0))
-        if _plane_rms > 15.0:
+        if _plane_rms > 20.0:
             _block(
-                f"table plane RMS is {_plane_rms:.1f} mm (need < 15 mm). "
-                "Clear the table, avoid shiny/dark surfaces, reduce bright lights, then re-learn the table plane."
+                f"table plane RMS is {_plane_rms:.1f} mm (need < 20 mm). "
+                "The depth camera can't see the table surface reliably — avoid shiny, dark, or transparent table surfaces "
+                "and direct bright lights, then re-learn the table plane."
             )
             return
         if self.last_depth_frame is None or self.last_realsense_intrinsics is None or self.last_depth_scale is None:

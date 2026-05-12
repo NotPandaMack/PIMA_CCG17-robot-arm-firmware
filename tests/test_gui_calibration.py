@@ -205,6 +205,30 @@ class GuiCalibrationTests(unittest.TestCase):
         self.assertLess(result["fit"]["errorMm"], 5.0)
 
     @unittest.skipUnless(HAS_OPENCV, "OpenCV and NumPy are not installed")
+    def test_ransac_plane_fit_ignores_objects_on_table(self):
+        import numpy as np
+
+        # Table at 1000 raw units. Objects (boxes) placed in a 20x20 px region
+        # at depth 700 (closer to camera = above the table).
+        depth = np.full((80, 100), 1000, dtype=np.uint16)
+        depth[25:45, 35:55] = 700  # object covers ~6% of the area
+        intrinsics = {"fx": 100.0, "fy": 100.0, "ppx": 50.0, "ppy": 40.0}
+        markers = [
+            {"pixel": {"x": 10, "y": 10}},
+            {"pixel": {"x": 90, "y": 10}},
+            {"pixel": {"x": 90, "y": 70}},
+            {"pixel": {"x": 10, "y": 70}},
+        ]
+        plane = fit_table_plane_from_depth(depth_image=depth, intrinsics=intrinsics, marker_points=markers, depth_scale=0.001, stride=4)
+        # RMS should be low: object points are RANSAC outliers and excluded from the fit
+        self.assertLess(plane["rmsErrorMm"], 10.0)
+        # Table-surface inlier count should be less than total (object pixels excluded)
+        self.assertLess(plane["inlierCount"], plane["totalPointCount"])
+        # Height measurement above the fitted table plane should still be accurate
+        claw_point = deproject_pixel_to_point_mm(50, 40, 940.0, intrinsics)
+        self.assertAlmostEqual(60.0, height_above_table_mm(claw_point, plane), delta=5.0)
+
+    @unittest.skipUnless(HAS_OPENCV, "OpenCV and NumPy are not installed")
     def test_charuco_side_board_detection(self):
         import cv2
         import numpy as np

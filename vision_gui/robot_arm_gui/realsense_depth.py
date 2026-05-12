@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import random
 from typing import Any
 
 
@@ -81,22 +82,38 @@ def fit_table_plane_from_depth(
     if len(points) < 50:
         raise ValueError("not enough valid RealSense depth points inside the marker area")
 
-    plane = _fit_plane(points)
-    distances = [_point_plane_distance(point, plane) for point in points]
-    median_distance = float(np.median(np.abs(distances)))
-    filtered = [point for point, distance in zip(points, distances, strict=False) if abs(distance) <= max(8.0, median_distance * 3.0)]
-    if len(filtered) >= 50:
-        plane = _fit_plane(filtered)
-        points = filtered
-        distances = [_point_plane_distance(point, plane) for point in points]
+    total_count = len(points)
+    pts_array = np.asarray(points, dtype=np.float64)
 
-    rms = math.sqrt(sum(distance * distance for distance in distances) / len(distances))
+    # RANSAC: objects sitting on the table are outliers — only the table surface itself
+    # reaches consensus. Works even when objects cover a large fraction of the view.
+    plane = _ransac_fit_plane(pts_array, threshold_mm=12.0, iterations=300)
+
+    # Polish the plane with an SVD fit over all RANSAC inliers
+    a, b, c, d = plane
+    signed_dists = pts_array[:, 0] * a + pts_array[:, 1] * b + pts_array[:, 2] * c + d
+    inlier_mask = np.abs(signed_dists) <= 12.0
+    inlier_pts = pts_array[inlier_mask]
+
+    if len(inlier_pts) >= 50:
+        plane = _fit_plane(inlier_pts.tolist())
+        a, b, c, d = plane
+        final_dists = inlier_pts[:, 0] * a + inlier_pts[:, 1] * b + inlier_pts[:, 2] * c + d
+        rms = float(np.sqrt(np.mean(final_dists ** 2)))
+        inlier_count = int(len(inlier_pts))
+    else:
+        a, b, c, d = plane
+        all_dists = pts_array[:, 0] * a + pts_array[:, 1] * b + pts_array[:, 2] * c + d
+        rms = float(np.sqrt(np.mean(all_dists ** 2)))
+        inlier_count = total_count
+
     return {
         "method": "realsense_depth_plane",
         "plane": {"a": plane[0], "b": plane[1], "c": plane[2], "d": plane[3]},
-        "inlierCount": len(points),
+        "inlierCount": inlier_count,
+        "totalPointCount": total_count,
         "rmsErrorMm": float(rms),
-        "depthFillRatio": float(len(points) / max(1, int(mask.sum() / 255 / (max(1, int(stride)) ** 2)))),
+        "depthFillRatio": float(inlier_count / max(1, int(mask.sum() / 255 / (max(1, int(stride)) ** 2)))),
         "markerPolygon": [{"x": int(x), "y": int(y)} for x, y in polygon],
     }
 
@@ -265,6 +282,51 @@ def _marker_polygon(marker_points: list[dict[str, Any]]) -> list[tuple[int, int]
     center_y = sum(point[1] for point in centers) / len(centers)
     ordered = sorted(centers, key=lambda point: math.atan2(point[1] - center_y, point[0] - center_x))
     return [(int(round(x)), int(round(y))) for x, y in ordered]
+
+
+def _ransac_fit_plane(
+    pts: Any,  # numpy float64 array (N, 3)
+    threshold_mm: float = 12.0,
+    iterations: int = 300,
+) -> tuple[float, float, float, float]:
+    import numpy as np
+
+    n = len(pts)
+    if n < 3:
+        raise ValueError("need at least 3 points for RANSAC plane fit")
+
+    best_plane: tuple[float, float, float, float] | None = None
+    best_count = 0
+
+    for _ in range(iterations):
+        i0, i1, i2 = random.sample(range(n), 3)
+        plane = _plane_from_three_points(pts[i0], pts[i1], pts[i2])
+        if plane is None:
+            continue
+        a, b, c, d = plane
+        dists = np.abs(pts[:, 0] * a + pts[:, 1] * b + pts[:, 2] * c + d)
+        count = int(np.sum(dists <= threshold_mm))
+        if count > best_count:
+            best_count = count
+            best_plane = plane
+
+    if best_plane is None:
+        raise ValueError("RANSAC could not find a valid plane — depth data may be entirely invalid")
+    return best_plane
+
+
+def _plane_from_three_points(p0: Any, p1: Any, p2: Any) -> tuple[float, float, float, float] | None:
+    v1x, v1y, v1z = float(p1[0] - p0[0]), float(p1[1] - p0[1]), float(p1[2] - p0[2])
+    v2x, v2y, v2z = float(p2[0] - p0[0]), float(p2[1] - p0[1]), float(p2[2] - p0[2])
+    nx = v1y * v2z - v1z * v2y
+    ny = v1z * v2x - v1x * v2z
+    nz = v1x * v2y - v1y * v2x
+    norm = math.sqrt(nx * nx + ny * ny + nz * nz)
+    if norm < 1e-9:
+        return None
+    nx, ny, nz = nx / norm, ny / norm, nz / norm
+    d = -(nx * float(p0[0]) + ny * float(p0[1]) + nz * float(p0[2]))
+    return nx, ny, nz, d
 
 
 def _fit_plane(points: list[tuple[float, float, float]]) -> tuple[float, float, float, float]:
