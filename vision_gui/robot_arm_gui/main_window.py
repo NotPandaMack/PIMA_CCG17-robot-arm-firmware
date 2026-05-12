@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from copy import deepcopy
+from pathlib import Path
 from time import perf_counter
 from typing import Any
 
@@ -10,6 +11,7 @@ from PySide6.QtCore import QTimer, Qt, QThreadPool
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -24,6 +26,7 @@ from PySide6.QtWidgets import (
 from .calibration_manager import (
     ChecklistState,
     build_calibration,
+    build_mapping_homography,
     calibration_complete,
     convert_pixel,
     empty_calibration,
@@ -33,6 +36,12 @@ from .calibration_manager import (
     save_local_calibration,
     table_z_calibrated,
     workspace_bounds_saved,
+)
+from .calibration_markers import (
+    detect_aruco_markers,
+    detect_qr_markers,
+    generate_aruco_marker_sheet,
+    generate_qr_marker_sheet,
 )
 from .config import DEFAULT_HSV_PROFILE, DEFAULT_SETTINGS, load_settings, normalize_http_url, save_settings
 from .detection_worker import DetectionResult, HSVProfile
@@ -76,6 +85,7 @@ class MainWindow(QMainWindow):
         self.last_robot_xy: tuple[float, float] | None = None
         self.last_plan: dict[str, Any] | None = None
         self.last_frame_size: tuple[int, int] | None = None
+        self.last_camera_frame: Any | None = None
         self.last_target_status = "none"
         self.last_send_at = 0.0
         self.camera_worker: Any | None = None
@@ -246,6 +256,12 @@ class MainWindow(QMainWindow):
 
         self.calibration_page.camera_view.mapped_clicked.connect(self.handle_calibration_click)
         self.calibration_page.grid_overlay_changed.connect(self.update_calibration_grid_overlay)
+        self.calibration_page.generate_aruco_requested.connect(self.generate_aruco_marker_sheet)
+        self.calibration_page.scan_aruco_requested.connect(self.scan_aruco_markers)
+        self.calibration_page.generate_qr_requested.connect(self.generate_qr_marker_sheet)
+        self.calibration_page.scan_qr_requested.connect(self.scan_qr_markers)
+        self.calibration_page.marker_overlay_changed.connect(lambda _markers: self.update_calibration_marker_overlay())
+        self.calibration_page.step_changed.connect(lambda _step: self.update_calibration_marker_overlay())
         self.calibration_page.save_touch_requested.connect(self.save_table_touch_point)
         self.calibration_page.save_pickup_requested.connect(self.save_pickup_pose_from_esp)
         self.calibration_page.save_step_requested.connect(self.save_calibration_step)
@@ -545,6 +561,7 @@ class MainWindow(QMainWindow):
     def on_camera_frame(self, frame: Any) -> None:
         h, w = frame.shape[:2]
         self.last_frame_size = (w, h)
+        self.last_camera_frame = frame.copy()
         image = QImage(frame.data, w, h, frame.strides[0], QImage.Format_BGR888).copy()
         pixmap = QPixmap.fromImage(image)
         for view in (self.camera_page.camera_view, self.calibration_page.camera_view, self.autonomous_page.camera_view):
@@ -664,6 +681,7 @@ class MainWindow(QMainWindow):
         x = int(mapped["pixelX"])
         y = int(mapped["pixelY"])
         self.calibration_page.capture_click(x, y, mapped)
+        self.update_calibration_marker_overlay()
         if self.calibration_page.step_index == 6:
             robot_xy = convert_pixel(self.calibration, x, y)
             if robot_xy:
@@ -705,6 +723,78 @@ class MainWindow(QMainWindow):
             self.calibration.get("homography") if has_homography(self.calibration) else None,
             self.calibration.get("workspaceBounds", self.settings.get("workspace", {})),
         )
+        self.update_calibration_marker_overlay()
+
+    def update_calibration_marker_overlay(self) -> None:
+        mapping_step = self.calibration_page.step_index == 2
+        if self.calibration_page.step_index != 6:
+            self.calibration_page.camera_view.set_marker(None, None)
+        self.calibration_page.camera_view.set_calibration_overlay(
+            markers=self.calibration_page.mapping_overlay() if mapping_step else {},
+            origin_pixel=self.calibration_page.origin_pixel if mapping_step else None,
+            expected_guides=mapping_step,
+            rulers_enabled=mapping_step,
+        )
+
+    def generate_aruco_marker_sheet(self) -> None:
+        self._generate_marker_sheet("ArUco", "calibration_aruco_markers.pdf", generate_aruco_marker_sheet)
+
+    def generate_qr_marker_sheet(self) -> None:
+        self._generate_marker_sheet("QR fallback", "calibration_qr_markers.pdf", generate_qr_marker_sheet)
+
+    def _generate_marker_sheet(self, marker_type: str, default_name: str, generator: Any) -> None:
+        default_path = Path(__file__).resolve().parents[1] / "prints" / default_name
+        filename, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            f"Save {marker_type} marker sheet",
+            str(default_path),
+            "PDF files (*.pdf);;PNG files (*.png)",
+        )
+        if not filename:
+            return
+        output_path = Path(filename)
+        self.log(f"Generating {marker_type} marker sheet.")
+
+        def task() -> str:
+            generator(output_path)
+            return str(output_path)
+
+        self._run_background(
+            task,
+            lambda path: self.log(f"{marker_type} marker sheet saved: {path}"),
+            f"{marker_type} marker sheet not generated",
+        )
+
+    def scan_aruco_markers(self) -> None:
+        self._scan_calibration_markers("ArUco", detect_aruco_markers)
+
+    def scan_qr_markers(self) -> None:
+        self._scan_calibration_markers("QR fallback", detect_qr_markers)
+
+    def _scan_calibration_markers(self, marker_type: str, detector: Any) -> None:
+        if self.last_camera_frame is None:
+            self.log(f"{marker_type} scan blocked: start the camera first.")
+            return
+        frame = self.last_camera_frame.copy()
+        self.calibration_page.set_mapping_detection_status(f"Scanning {marker_type} markers from the latest camera frame...")
+
+        def task() -> dict[str, Any]:
+            return detector(frame)
+
+        def on_result(result: dict[str, Any]) -> None:
+            markers = result.get("markers", [])
+            warnings = result.get("warnings", [])
+            self.calibration_page.apply_detected_markers(markers, warnings)
+            self.update_calibration_marker_overlay()
+            count = len(markers)
+            warning_text = f" Warnings: {' '.join(warnings)}" if warnings else ""
+            self.log(f"{marker_type} scan found {count}/4 calibration markers.{warning_text}")
+
+        def on_error(message: str) -> None:
+            if marker_type == "ArUco":
+                self.calibration_page.set_aruco_status(message, False)
+
+        self._run_background(task, on_result, f"{marker_type} scan failed", on_error=on_error)
 
     def save_calibration_step(self) -> None:
         step = self.calibration_page.step_index
@@ -725,7 +815,16 @@ class MainWindow(QMainWindow):
                 self.log("Camera mapping blocked: all four marker pixels are required.")
                 return
             self.calibration["points"] = points
-            self.log("Four-point mapping saved. Homography will be computed on finish.")
+            try:
+                homography, reprojection_error = build_mapping_homography(points)
+            except Exception as error:
+                self.log(f"Camera mapping blocked: {error}")
+                self.calibration_page.set_mapping_quality(f"Camera mapping blocked: {error}")
+                return
+            self.calibration["homography"] = homography
+            self.calibration["reprojectionError"] = reprojection_error
+            self.calibration_page.set_mapping_quality(f"Camera mapping ready. Reprojection error: {reprojection_error:.2f} mm.")
+            self.log(f"Four-point mapping saved. Reprojection error: {reprojection_error:.2f} mm.")
         elif step == 3:
             workspace = self.calibration_page.workspace()
             self.calibration["workspaceBounds"] = workspace

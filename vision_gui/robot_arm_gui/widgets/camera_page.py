@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QCheckBox,
     QFormLayout,
@@ -33,6 +33,10 @@ class CameraView(QLabel):
         self._frame_size: tuple[int, int] | None = None
         self._source_pixmap: QPixmap | None = None
         self._marker: dict | None = None
+        self._calibration_markers: dict[str, dict] = {}
+        self._origin_pixel: tuple[int, int] | None = None
+        self._expected_guides_enabled = False
+        self._rulers_enabled = True
         self._grid_enabled = False
         self._grid_homography: list[list[float]] | None = None
         self._grid_workspace: dict | None = None
@@ -44,6 +48,20 @@ class CameraView(QLabel):
 
     def set_marker(self, pixel_x: int | None, pixel_y: int | None, text: str = "") -> None:
         self._marker = None if pixel_x is None or pixel_y is None else {"x": int(pixel_x), "y": int(pixel_y), "text": text}
+        self._render_scaled()
+
+    def set_calibration_overlay(
+        self,
+        *,
+        markers: dict[str, dict] | None = None,
+        origin_pixel: tuple[int, int] | None = None,
+        expected_guides: bool = False,
+        rulers_enabled: bool = True,
+    ) -> None:
+        self._calibration_markers = markers or {}
+        self._origin_pixel = origin_pixel
+        self._expected_guides_enabled = expected_guides
+        self._rulers_enabled = rulers_enabled
         self._render_scaled()
 
     def set_grid_overlay(self, enabled: bool, homography: list[list[float]] | None = None, workspace: dict | None = None) -> None:
@@ -81,6 +99,8 @@ class CameraView(QLabel):
         display_rect = QRectF(0, 0, scaled.width(), scaled.height())
         if self._grid_enabled and self._grid_homography and self._grid_workspace:
             self._draw_grid(painter, display_rect)
+        if self._expected_guides_enabled or self._calibration_markers:
+            self._draw_calibration_overlay(painter, display_rect)
         if self._marker:
             self._draw_marker(painter, display_rect)
         painter.end()
@@ -101,6 +121,83 @@ class CameraView(QLabel):
         if text:
             painter.setPen(QPen(QColor("#ffffff"), 1))
             painter.drawText(QPointF(min(point.x() + 14, display_rect.width() - 260), max(20, point.y() - 14)), text)
+
+    def _draw_calibration_overlay(self, painter: QPainter, display_rect: QRectF) -> None:
+        if self._expected_guides_enabled:
+            self._draw_expected_guides(painter, display_rect)
+
+        origin = None
+        if self._origin_pixel:
+            origin = self._frame_to_display(self._origin_pixel[0], self._origin_pixel[1], display_rect)
+            painter.setPen(QPen(QColor("#38bdf8"), 3))
+            painter.drawEllipse(origin, 9, 9)
+            painter.drawText(QPointF(origin.x() + 12, origin.y() - 10), "Robot origin")
+
+        for marker in self._calibration_markers.values():
+            point = self._marker_center(marker, display_rect)
+            if point is None:
+                continue
+            if self._rulers_enabled and origin is not None:
+                pen = QPen(QColor(255, 255, 255, 180), 2)
+                pen.setStyle(Qt.DashLine)
+                painter.setPen(pen)
+                painter.drawLine(origin, point)
+                robot = marker.get("robot", {})
+                mid = QPointF((origin.x() + point.x()) / 2.0, (origin.y() + point.y()) / 2.0)
+                painter.setPen(QPen(QColor("#e2e8f0"), 1))
+                painter.drawText(QPointF(mid.x() + 8, mid.y() - 8), f"X {float(robot.get('x', 0.0)):.0f}, Y {float(robot.get('y', 0.0)):.0f}")
+            self._draw_calibration_marker(painter, display_rect, marker, point)
+
+    def _draw_expected_guides(self, painter: QPainter, display_rect: QRectF) -> None:
+        guides = {
+            "BL": QPointF(display_rect.width() * 0.08, display_rect.height() * 0.10),
+            "BR": QPointF(display_rect.width() * 0.88, display_rect.height() * 0.10),
+            "FL": QPointF(display_rect.width() * 0.08, display_rect.height() * 0.88),
+            "FR": QPointF(display_rect.width() * 0.88, display_rect.height() * 0.88),
+        }
+        painter.setPen(QPen(QColor(125, 211, 252, 150), 2))
+        for short, point in guides.items():
+            painter.drawEllipse(point, 13, 13)
+            painter.drawText(QPointF(point.x() + 18, point.y() + 4), f"{short} expected")
+
+    def _marker_center(self, marker: dict, display_rect: QRectF) -> QPointF | None:
+        pixel = marker.get("pixel")
+        if not isinstance(pixel, dict):
+            return None
+        try:
+            return self._frame_to_display(float(pixel["x"]), float(pixel["y"]), display_rect)
+        except Exception:
+            return None
+
+    def _draw_calibration_marker(self, painter: QPainter, display_rect: QRectF, marker: dict, point: QPointF) -> None:
+        corners = marker.get("corners")
+        if isinstance(corners, list) and len(corners) >= 4:
+            polygon = QPolygonF()
+            display_corners: list[QPointF] = []
+            for corner in corners:
+                if isinstance(corner, dict):
+                    corner_point = self._frame_to_display(float(corner.get("x", 0.0)), float(corner.get("y", 0.0)), display_rect)
+                    display_corners.append(corner_point)
+                    polygon.append(corner_point)
+            if polygon.count() >= 4:
+                painter.setPen(QPen(QColor("#fbbf24"), 3))
+                painter.drawPolygon(polygon)
+                painter.setPen(QPen(QColor("#ffffff"), 2))
+                for corner_point in display_corners:
+                    painter.drawEllipse(corner_point, 3, 3)
+        color = QColor("#22c55e") if marker.get("source") == "aruco" else QColor("#fb7185") if marker.get("source") == "manual" else QColor("#38bdf8")
+        painter.setPen(QPen(color, 3))
+        painter.drawLine(QPointF(point.x() - 14, point.y()), QPointF(point.x() + 14, point.y()))
+        painter.drawLine(QPointF(point.x(), point.y() - 14), QPointF(point.x(), point.y() + 14))
+        painter.drawEllipse(point, 8, 8)
+        short = str(marker.get("short") or marker.get("label") or "?")
+        source = str(marker.get("source") or "marker")
+        robot = marker.get("robot", {})
+        painter.setPen(QPen(QColor("#ffffff"), 1))
+        painter.drawText(
+            QPointF(min(point.x() + 16, display_rect.width() - 180), max(22, point.y() - 16)),
+            f"{short} {source}  X {float(robot.get('x', 0.0)):.0f} Y {float(robot.get('y', 0.0)):.0f}",
+        )
 
     def _draw_grid(self, painter: QPainter, display_rect: QRectF) -> None:
         points = self._grid_points()

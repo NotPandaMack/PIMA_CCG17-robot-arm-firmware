@@ -191,6 +191,21 @@ def build_calibration(
     return calibration
 
 
+def build_mapping_homography(points: list[dict[str, Any]]) -> tuple[list[list[float]], float]:
+    import cv2
+    import numpy as np
+
+    if len(points) != 4:
+        raise ValueError("four calibration points are required")
+    validate_point_spacing(points)
+    pixel_points = np.array([[p["pixel"]["x"], p["pixel"]["y"]] for p in points], dtype=np.float32)
+    robot_points = np.array([[p["robot"]["x"], p["robot"]["y"]] for p in points], dtype=np.float32)
+    homography, _ = cv2.findHomography(pixel_points, robot_points)
+    if homography is None:
+        raise ValueError("unable to compute homography")
+    return homography.tolist(), compute_reprojection_error(pixel_points, robot_points, homography)
+
+
 def validate_point_spacing(points: list[dict[str, Any]], min_distance_px: float = 25.0) -> None:
     pixels = [(float(p["pixel"]["x"]), float(p["pixel"]["y"])) for p in points]
     for index, first in enumerate(pixels):

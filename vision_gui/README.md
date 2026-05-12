@@ -65,7 +65,7 @@ Full pickup stays locked until hover-only real movement has passed and you confi
 2. Open Calibration.
 3. Camera Placement: confirm the full reachable table is visible.
 4. Define Robot Origin: click the robot base center projected onto the table.
-5. Four-Point Table Mapping: click front-left, front-right, back-left, and back-right markers and enter their robot X/Y millimeter coordinates.
+5. Four-Point Table Mapping: generate and print the ArUco marker sheet, place IDs 0-3 at FL/FR/BL/BR, then scan markers from the camera to auto-fill pixel centers and robot X/Y coordinates. If ArUco is unavailable, use the QR fallback sheet. Manual click placement is still available behind the manual fallback checkbox.
 6. Workspace Bounds: save the safety limits.
 7. Table Z Calibration: manually jog the arm until the tip barely touches the table, then save touch points. The GUI never lowers the arm automatically.
 8. Pickup Pose: manually move to a safe pickup pose and save the current ESP pose.
@@ -110,3 +110,4 @@ Full pickup stays locked until hover-only real movement has passed and you confi
 - Auto-detect only tries common local Pi addresses; manual URL entry is still the reliable setup path.
 - The GUI expects the current ESP status fields already exposed by `/status`.
 - The app stores GUI preferences in `vision_gui/user_settings.json`, which is local to this machine.
+- ArUco marker generation and detection require `opencv-contrib-python`. Plain `opencv-python` does not always include `cv2.aruco`.

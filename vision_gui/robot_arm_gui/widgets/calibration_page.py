@@ -3,6 +3,7 @@ from __future__ import annotations
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..calibration_markers import MARKER_DEFINITIONS, mapping_warnings
 from ..config import DEFAULT_WORKSPACE
 from .camera_page import CameraView
 
@@ -51,12 +53,19 @@ class CalibrationPage(QWidget):
     test_hover_requested = Signal()
     finish_requested = Signal()
     grid_overlay_changed = Signal(bool)
+    generate_aruco_requested = Signal()
+    scan_aruco_requested = Signal()
+    generate_qr_requested = Signal()
+    scan_qr_requested = Signal()
+    marker_overlay_changed = Signal(object)
 
     def __init__(self) -> None:
         super().__init__()
         self.step_index = 0
         self.origin_pixel: tuple[int, int] | None = None
         self.mapping_pixels: dict[str, tuple[int, int]] = {}
+        self.mapping_sources: dict[str, str] = {}
+        self.mapping_corners: dict[str, list[dict]] = {}
         self.table_points: list[dict] = []
         self.validation_pixel: tuple[int, int] | None = None
 
@@ -129,10 +138,13 @@ class CalibrationPage(QWidget):
         if self.step_index == 1:
             self.origin_pixel = (x, y)
             self.origin_label.setText(f"Origin pixel: {x}, {y}")
+            self._emit_marker_overlay_changed()
         elif self.step_index == 2:
+            if not self.manual_fallback.isChecked():
+                self.mapping_help.setText("Manual clicks are locked. Enable manual click fallback to place markers by clicking.")
+                return
             label = self.current_marker_label()
-            self.mapping_pixels[label] = (x, y)
-            self.marker_pixel_labels[label].setText(f"{x}, {y}")
+            self.set_mapping_marker(label, x, y, source="manual")
         elif self.step_index == 6:
             self.validation_pixel = (x, y)
             if debug:
@@ -145,7 +157,98 @@ class CalibrationPage(QWidget):
                 self.validation_label.setText(f"Clicked pixel: {x}, {y}")
 
     def current_marker_label(self) -> str:
-        return MAPPING_DEFAULTS[self.current_marker.value()][0]
+        return str(self.current_marker.currentData() or MAPPING_DEFAULTS[0][0])
+
+    def set_mapping_marker(
+        self,
+        label: str,
+        pixel_x: float,
+        pixel_y: float,
+        *,
+        source: str,
+        robot_x: float | None = None,
+        robot_y: float | None = None,
+        corners: list[dict] | None = None,
+    ) -> None:
+        x = int(round(pixel_x))
+        y = int(round(pixel_y))
+        self.mapping_pixels[label] = (x, y)
+        self.mapping_sources[label] = source
+        if corners:
+            self.mapping_corners[label] = corners
+        elif label in self.mapping_corners:
+            del self.mapping_corners[label]
+        if robot_x is not None:
+            self.robot_x_inputs[label].setValue(float(robot_x))
+        if robot_y is not None:
+            self.robot_y_inputs[label].setValue(float(robot_y))
+        self.marker_pixel_labels[label].setText(f"{x}, {y}")
+        self.marker_source_labels[label].setText(source)
+        self.marker_check_labels[label].setText("OK")
+        self._update_mapping_summary()
+        self._emit_marker_overlay_changed()
+
+    def apply_detected_markers(self, markers: list[dict], warnings: list[str] | None = None) -> None:
+        for marker in markers:
+            label = marker.get("label")
+            pixel = marker.get("pixel", {})
+            robot = marker.get("robot", {})
+            if label not in self.robot_x_inputs:
+                continue
+            self.set_mapping_marker(
+                label,
+                float(pixel.get("x", 0.0)),
+                float(pixel.get("y", 0.0)),
+                source=str(marker.get("source", "aruco")),
+                robot_x=float(robot.get("x", self.robot_x_inputs[label].value())),
+                robot_y=float(robot.get("y", self.robot_y_inputs[label].value())),
+                corners=marker.get("corners") if isinstance(marker.get("corners"), list) else None,
+            )
+        self._update_mapping_summary(warnings or [])
+        self._emit_marker_overlay_changed()
+
+    def set_mapping_detection_status(self, text: str) -> None:
+        self.mapping_help.setText(text)
+
+    def set_mapping_quality(self, text: str) -> None:
+        self.mapping_quality.setText(text)
+
+    def set_aruco_status(self, text: str, available: bool) -> None:
+        self.aruco_status.setText(text)
+        self.scan_aruco_button.setEnabled(available)
+        self.generate_aruco_button.setEnabled(available)
+
+    def mapping_overlay(self) -> dict[str, dict]:
+        markers = {}
+        for label, (x, y) in self.mapping_pixels.items():
+            short = _short_label(label)
+            markers[label] = {
+                "label": label,
+                "short": short,
+                "pixel": {"x": x, "y": y},
+                "robot": {"x": self.robot_x_inputs[label].value(), "y": self.robot_y_inputs[label].value()},
+                "source": self.mapping_sources.get(label, "manual"),
+                "corners": self.mapping_corners.get(label),
+            }
+        return markers
+
+    def _update_mapping_summary(self, warnings: list[str] | None = None) -> None:
+        missing = [_short_label(label) for label, _x, _y in MAPPING_DEFAULTS if label not in self.mapping_pixels]
+        all_warnings = list(warnings or [])
+        if len(self.mapping_pixels) >= 2:
+            all_warnings.extend(mapping_warnings(list(self.mapping_overlay().values())))
+        if missing:
+            text = f"Need markers: {', '.join(missing)}."
+        else:
+            text = "Ready to compute homography."
+        if all_warnings:
+            text += "\nWarnings: " + " ".join(dict.fromkeys(all_warnings))
+        self.mapping_quality.setText(text)
+
+    def _emit_marker_overlay_changed(self) -> None:
+        if hasattr(self, "mapping_quality"):
+            self._update_mapping_summary()
+        self.marker_overlay_changed.emit(self.mapping_overlay())
 
     def mapping_points(self) -> list[dict]:
         points = []
@@ -158,6 +261,7 @@ class CalibrationPage(QWidget):
                     "label": label,
                     "pixel": {"x": px, "y": py},
                     "robot": {"x": self.robot_x_inputs[label].value(), "y": self.robot_y_inputs[label].value()},
+                    "source": self.mapping_sources.get(label, "manual"),
                 }
             )
         return points
@@ -201,7 +305,12 @@ class CalibrationPage(QWidget):
             point["espStatus"] = status["espStatus"]
         self.table_points = [existing for existing in self.table_points if existing["label"] != label]
         self.table_points.append(point)
+        if hasattr(self, "table_point_status_labels") and label in self.table_point_status_labels:
+            self.table_point_status_labels[label].setText(f"Saved X {point['x']:.1f}, Y {point['y']:.1f}, Z {point['z']:.1f}")
+            self.table_point_source_labels[label].setText(str(status.get("source", "unknown source")))
         self.table_status.setText("\n".join(f"{p['label']}: X {p['x']:.1f}, Y {p['y']:.1f}, Z {p['z']:.1f}" for p in self.table_points))
+        method = "plane" if len(self.table_points) >= 3 else "placeholder"
+        self.table_z_summary.setText(f"Table Z method: {method}. Saved points: {len(self.table_points)} / 4 required plus optional center.")
         self.table_source_status.setText(f"Saved {label} from {status.get('source', 'unknown source')}.")
 
     def table_z(self) -> dict:
@@ -232,28 +341,69 @@ class CalibrationPage(QWidget):
     def _mapping_step(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        self.current_marker = QSpinBox()
-        self.current_marker.setRange(0, len(MAPPING_DEFAULTS) - 1)
-        self.current_marker.setPrefix("Marker ")
+        self.aruco_status = QLabel("ArUco is the primary path. Support is checked when you generate or scan markers.")
+        self.aruco_status.setWordWrap(True)
+        layout.addWidget(self.aruco_status)
+
+        action_row = QHBoxLayout()
+        self.generate_aruco_button = QPushButton("Generate ArUco Marker Sheet")
+        self.scan_aruco_button = QPushButton("Scan ArUco Markers From Camera")
+        self.generate_qr_button = QPushButton("Generate QR Fallback Sheet")
+        self.scan_qr_button = QPushButton("Scan QR Fallback")
+        for button in (self.generate_aruco_button, self.scan_aruco_button, self.generate_qr_button, self.scan_qr_button):
+            action_row.addWidget(button)
+        layout.addLayout(action_row)
+
+        self.mapping_help = QLabel("Place printed ArUco markers at FL/FR/BL/BR, then scan from the live camera.")
+        self.mapping_help.setWordWrap(True)
+        layout.addWidget(self.mapping_help)
+
+        self.manual_fallback = QCheckBox("Use manual click fallback")
+        layout.addWidget(self.manual_fallback)
+
+        self.current_marker = QComboBox()
+        for label, _default_x, _default_y in MAPPING_DEFAULTS:
+            self.current_marker.addItem(f"Manual marker: {_short_label(label)} - {label}", label)
+        self.current_marker.setEnabled(False)
         layout.addWidget(self.current_marker)
+
         self.marker_pixel_labels: dict[str, QLabel] = {}
+        self.marker_source_labels: dict[str, QLabel] = {}
+        self.marker_check_labels: dict[str, QLabel] = {}
         self.robot_x_inputs: dict[str, QDoubleSpinBox] = {}
         self.robot_y_inputs: dict[str, QDoubleSpinBox] = {}
         for label, default_x, default_y in MAPPING_DEFAULTS:
             box = QFrame()
             box.setObjectName("subPanel")
             form = QFormLayout(box)
+            status = QLabel("missing")
             pixel_label = QLabel("not clicked")
+            source_label = QLabel("none")
             robot_x = self._double(default_x, -500.0, 500.0)
             robot_y = self._double(default_y, -100.0, 500.0)
+            robot_x.valueChanged.connect(lambda _value, self=self: self._emit_marker_overlay_changed())
+            robot_y.valueChanged.connect(lambda _value, self=self: self._emit_marker_overlay_changed())
             self.marker_pixel_labels[label] = pixel_label
+            self.marker_source_labels[label] = source_label
+            self.marker_check_labels[label] = status
             self.robot_x_inputs[label] = robot_x
             self.robot_y_inputs[label] = robot_y
-            form.addRow(QLabel(label))
+            form.addRow(QLabel(f"{_short_label(label)} - {label}"))
+            form.addRow("Status", status)
             form.addRow("Pixel", pixel_label)
+            form.addRow("Source", source_label)
             form.addRow("Robot X mm", robot_x)
             form.addRow("Robot Y mm", robot_y)
             layout.addWidget(box)
+        self.mapping_quality = QLabel("Need FL, FR, BL, BR markers.")
+        self.mapping_quality.setWordWrap(True)
+        layout.addWidget(self.mapping_quality)
+        self.generate_aruco_button.clicked.connect(self.generate_aruco_requested.emit)
+        self.scan_aruco_button.clicked.connect(self.scan_aruco_requested.emit)
+        self.generate_qr_button.clicked.connect(self.generate_qr_requested.emit)
+        self.scan_qr_button.clicked.connect(self.scan_qr_requested.emit)
+        self.manual_fallback.toggled.connect(self.current_marker.setEnabled)
+        self.manual_fallback.toggled.connect(lambda _checked: self._emit_marker_overlay_changed())
         layout.addStretch(1)
         return page
 
@@ -270,18 +420,36 @@ class CalibrationPage(QWidget):
     def _table_z_step(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        self.table_point_index = QSpinBox()
-        self.table_point_index.setRange(0, len(TABLE_POINTS) - 1)
-        layout.addWidget(self.table_point_index)
-        button = QPushButton("Save Touch Point From Current ESP Pose")
-        button.setObjectName("primaryButton")
-        button.clicked.connect(lambda: self.save_touch_requested.emit(TABLE_POINTS[self.table_point_index.value()]))
+        intro = QLabel("Move the arm with the website 2D IK simulator or Specific Joint Adjustment. This GUI only records the current pose.")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        self.table_point_status_labels: dict[str, QLabel] = {}
+        self.table_point_source_labels: dict[str, QLabel] = {}
+        for label in TABLE_POINTS:
+            box = QFrame()
+            box.setObjectName("subPanel")
+            box_layout = QVBoxLayout(box)
+            title = QLabel(label)
+            status = QLabel("Missing")
+            source = QLabel("Source: none")
+            button = QPushButton(f"Save {label} From Current ESP Pose")
+            button.setObjectName("primaryButton")
+            button.clicked.connect(lambda _checked=False, point_label=label: self.save_touch_requested.emit(point_label))
+            box_layout.addWidget(title)
+            box_layout.addWidget(status)
+            box_layout.addWidget(source)
+            box_layout.addWidget(button)
+            self.table_point_status_labels[label] = status
+            self.table_point_source_labels[label] = source
+            layout.addWidget(box)
         self.table_status = QLabel("No touch points saved.")
         self.table_status.setWordWrap(True)
         self.table_source_status = QLabel("Move from the website first, then save. Source details will appear here.")
         self.table_source_status.setWordWrap(True)
-        layout.addWidget(button)
+        self.table_z_summary = QLabel("Table Z method: placeholder until at least three points are saved.")
+        self.table_z_summary.setWordWrap(True)
         layout.addWidget(self.table_status)
+        layout.addWidget(self.table_z_summary)
         layout.addWidget(self.table_source_status)
         layout.addStretch(1)
         return page
@@ -357,3 +525,10 @@ class CalibrationPage(QWidget):
         widget.setRange(minimum, maximum)
         widget.setValue(value)
         return widget
+
+
+def _short_label(label: str) -> str:
+    for definition in MARKER_DEFINITIONS.values():
+        if definition["label"] == label:
+            return str(definition["short"])
+    return label
