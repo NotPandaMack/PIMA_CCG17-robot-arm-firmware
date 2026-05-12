@@ -34,15 +34,16 @@ python app.py
 3. Enter the ESP URL, for example `http://192.168.1.60`.
 4. Select the webcam index, usually `0`.
 5. Use Test Pi Connection, Test ESP Connection, and Test Webcam.
-6. Copy the Camo RTMPS URL shown on Setup into Camo Studio as the streaming address.
-7. Use Test RTMPS Relay to confirm the DesktopGUI receiver is listening.
-8. Save Settings.
+6. Copy the Camo RTMPS server URL shown on Setup into Camo Studio as the streaming address.
+7. Copy the Camo stream key shown on Setup into Camo Studio as the stream key.
+8. Use Test RTMPS Relay to confirm the DesktopGUI receiver is listening.
+9. Save Settings.
 
 Use Mock Pi and Fake ESP modes to test the workflow without hardware.
 
 The app starts in a startup-safe mode: it does not automatically probe the Pi, ESP, webcam, config, or calibration during window creation. Status begins as Not tested, and hardware checks only run after you press a test button.
 
-The DesktopGUI starts a local RTMPS receiver for Camo Studio and relays it into the side-view preview. Use the Camo RTMPS URL shown on Setup, for example `rtmps://MAIN_LINUX_PC_IP:1936/live/side`.
+The DesktopGUI starts a local RTMPS receiver for Camo Studio and relays it into the side-view preview. Use the Camo RTMPS server URL shown on Setup, for example `rtmps://MAIN_LINUX_PC_IP:1936/live`, with stream key `side`.
 
 ## Beginner Setup Checklist
 

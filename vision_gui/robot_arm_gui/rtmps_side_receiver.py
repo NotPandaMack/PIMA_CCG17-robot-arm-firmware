@@ -22,20 +22,26 @@ class RtmpsSideCameraRelay(QThread):
         host: str = "0.0.0.0",
         rtmps_port: int = 1936,
         mjpeg_port: int = 8090,
-        app_path: str = "/live/side",
+        app_name: str = "live",
+        stream_key: str = "side",
         parent: Any = None,
     ) -> None:
         super().__init__(parent)
         self.host = host
         self.rtmps_port = int(rtmps_port)
         self.mjpeg_port = int(mjpeg_port)
-        self.app_path = app_path
+        self.app_name = app_name.strip("/") or "live"
+        self.stream_key = stream_key.strip("/") or "side"
         self._running = False
         self._process: subprocess.Popen[str] | None = None
 
     @property
     def ingest_url(self) -> str:
-        return f"rtmps://{_local_lan_ip()}:{self.rtmps_port}{self.app_path}"
+        return f"rtmps://{_local_lan_ip()}:{self.rtmps_port}/{self.app_name}/{self.stream_key}"
+
+    @property
+    def server_url(self) -> str:
+        return f"rtmps://{_local_lan_ip()}:{self.rtmps_port}/{self.app_name}"
 
     @property
     def capture_url(self) -> str:
@@ -73,7 +79,7 @@ class RtmpsSideCameraRelay(QThread):
             "-key_file",
             str(key_file),
             "-i",
-            f"rtmps://{self.host}:{self.rtmps_port}{self.app_path}",
+            f"rtmps://{self.host}:{self.rtmps_port}/{self.app_name}/{self.stream_key}",
             "-an",
             "-vf",
             "fps=15",

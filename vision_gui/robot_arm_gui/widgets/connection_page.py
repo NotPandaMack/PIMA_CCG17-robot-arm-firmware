@@ -60,15 +60,18 @@ class ConnectionPage(QWidget):
         self.camera_index = QSpinBox()
         self.camera_index.setRange(0, 12)
         self.side_camera_url = QLineEdit()
-        self.side_camera_url.setPlaceholderText("Camo RTMPS ingest URL")
+        self.side_camera_url.setPlaceholderText("rtmps://desktop-ip:1936/live")
         self.side_camera_url.setReadOnly(True)
+        self.side_camera_stream_key = QLineEdit()
+        self.side_camera_stream_key.setReadOnly(True)
         self.mock_pi = QCheckBox("Use mock Pi mode")
         self.fake_esp = QCheckBox("Use fake ESP status")
         form.addRow("Raspberry Pi URL", self.pi_url)
         form.addRow("Website/Pi UI URL", self.website_url)
         form.addRow("ESP URL", self.esp_url)
         form.addRow("Webcam index", self.camera_index)
-        form.addRow("Camo RTMPS URL", self.side_camera_url)
+        form.addRow("Camo RTMPS server URL", self.side_camera_url)
+        form.addRow("Camo stream key", self.side_camera_stream_key)
         form.addRow("", self.mock_pi)
         form.addRow("", self.fake_esp)
 
@@ -124,6 +127,7 @@ class ConnectionPage(QWidget):
         self.esp_url.setText(settings.get("espUrl", ""))
         self.camera_index.setValue(int(settings.get("cameraIndex", 0)))
         self.side_camera_url.setText(settings.get("sideCameraUrl", ""))
+        self.side_camera_stream_key.setText(settings.get("sideCameraStreamKey", "side"))
         self.mock_pi.setChecked(bool(settings.get("mockPi", False)))
         self.fake_esp.setChecked(bool(settings.get("fakeEsp", False)))
 
@@ -134,6 +138,7 @@ class ConnectionPage(QWidget):
             "espUrl": self.esp_url.text().strip(),
             "cameraIndex": self.camera_index.value(),
             "sideCameraUrl": self.side_camera_url.text().strip(),
+            "sideCameraStreamKey": self.side_camera_stream_key.text().strip(),
             "mockPi": self.mock_pi.isChecked(),
             "fakeEsp": self.fake_esp.isChecked(),
         }
@@ -149,3 +154,7 @@ class ConnectionPage(QWidget):
             return
         default = "Side camera connected" if connected else "Side camera disconnected"
         self.side_camera_status.set_state(message or default, "green" if connected else "red")
+
+    def set_side_camera_rtmps_details(self, server_url: str, stream_key: str) -> None:
+        self.side_camera_url.setText(server_url)
+        self.side_camera_stream_key.setText(stream_key)
