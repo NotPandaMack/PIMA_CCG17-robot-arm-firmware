@@ -60,7 +60,7 @@ class ConnectionPage(QWidget):
         self.camera_index = QSpinBox()
         self.camera_index.setRange(0, 12)
         self.side_camera_url = QLineEdit()
-        self.side_camera_url.setPlaceholderText("DesktopGUI WHIP URL for Larix")
+        self.side_camera_url.setPlaceholderText("DesktopGUI RTMP URL for Larix")
         self.side_camera_url.setReadOnly(True)
         self.mock_pi = QCheckBox("Use mock Pi mode")
         self.fake_esp = QCheckBox("Use fake ESP status")
@@ -68,7 +68,7 @@ class ConnectionPage(QWidget):
         form.addRow("Website/Pi UI URL", self.website_url)
         form.addRow("ESP URL", self.esp_url)
         form.addRow("Webcam index", self.camera_index)
-        form.addRow("Larix WebRTC URL", self.side_camera_url)
+        form.addRow("Larix RTMP URL", self.side_camera_url)
         form.addRow("", self.mock_pi)
         form.addRow("", self.fake_esp)
 
@@ -77,7 +77,7 @@ class ConnectionPage(QWidget):
         self.test_pi_button = QPushButton("Test Pi Connection")
         self.test_esp_button = QPushButton("Test ESP Connection")
         self.test_camera_button = QPushButton("Test Webcam")
-        self.test_side_camera_button = QPushButton("Test WebRTC Receiver")
+        self.test_side_camera_button = QPushButton("Test RTMP Relay")
         self.save_button = QPushButton("Save Settings")
         self.save_button.setObjectName("primaryButton")
         for button in (

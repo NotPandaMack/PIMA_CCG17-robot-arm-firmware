@@ -94,14 +94,15 @@ class MainWindow(QMainWindow):
         self.last_send_at = 0.0
         self.camera_worker: Any | None = None
         self.side_camera_worker: Any | None = None
-        self.whip_receiver: Any | None = None
+        self.rtmp_relay: Any | None = None
+        self.side_capture_url = ""
 
         self._build_ui()
         self._connect_signals()
         self._apply_settings_to_ui()
         self._apply_style()
         self._start_nonblocking_timers()
-        self.start_webrtc_side_receiver()
+        self.start_rtmp_side_relay()
         self.go_to("setup")
         self.update_ui_state()
         QTimer.singleShot(0, self._load_startup_files_async)
@@ -113,7 +114,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: Any) -> None:
         self.stop_camera()
         self.stop_side_camera()
-        self.stop_webrtc_side_receiver()
+        self.stop_rtmp_side_relay()
         self.settings["lastPage"] = self.current_page_name()
         save_settings(self.settings)
         super().closeEvent(event)
@@ -463,20 +464,15 @@ class MainWindow(QMainWindow):
         if not stream_url:
             self.side_camera_connected = False
             self.connection_page.update_side_camera_status(False, "Side camera URL missing")
-            self.log("Side camera test blocked: WebRTC receiver URL is missing.")
+            self.log("Side camera test blocked: RTMP relay URL is missing.")
             self.update_ui_state()
             return
-        self.connection_page.update_side_camera_status(None, "Side camera testing")
-        self.log("Testing local WebRTC receiver in the background.")
-
-        def task() -> dict[str, Any]:
-            import urllib.request
-
-            request = urllib.request.Request(stream_url, method="OPTIONS")
-            with urllib.request.urlopen(request, timeout=2.0) as response:
-                return {"ok": response.status in {200, 204, 405}, "status": response.status}
-
-        self._run_background(task, self._on_side_camera_test_result, "Side camera test failed", self._on_side_camera_offline)
+        ready = bool(self.rtmp_relay and self.rtmp_relay.isRunning())
+        self.side_camera_connected = ready
+        message = "RTMP relay ready; paste the URL into Larix" if ready else "RTMP relay is not running"
+        self.connection_page.update_side_camera_status(ready, message)
+        self.log(message)
+        self.update_ui_state()
 
     def _on_side_camera_offline(self, _message: str) -> None:
         self.side_camera_connected = False
@@ -486,9 +482,9 @@ class MainWindow(QMainWindow):
     def _on_side_camera_test_result(self, result: dict[str, Any]) -> None:
         self.side_camera_connected = bool(result.get("ok"))
         if self.side_camera_connected:
-            message = "WebRTC receiver ready; paste the URL into Larix"
+            message = "RTMP relay ready; paste the URL into Larix"
         else:
-            message = "WebRTC receiver did not respond"
+            message = "RTMP relay did not respond"
         self.connection_page.update_side_camera_status(self.side_camera_connected, message)
         self.log(message)
         self.update_ui_state()
@@ -606,15 +602,17 @@ class MainWindow(QMainWindow):
         self.update_ui_state()
 
     def start_side_camera(self, stream_url: str) -> None:
-        if stream_url.startswith(("http://", "https://")) and "/whip/" in stream_url:
+        if stream_url.startswith("rtmp://"):
             self.settings["sideCameraUrl"] = stream_url
             save_settings(self.settings)
             self.connection_page.side_camera_url.setText(stream_url)
             self.calibration_page.set_side_camera_url(stream_url)
-            self.calibration_page.set_side_camera_status("Waiting for Larix to start streaming to the WebRTC URL.")
-            self.connection_page.update_side_camera_status(True, "WebRTC receiver ready")
-            self.log("Side-view WebRTC receiver is ready. Start streaming from Larix.")
-            return
+            stream_url = self.side_capture_url
+            if not stream_url:
+                self.log("Side camera blocked: RTMP relay capture URL is not ready.")
+                return
+            self.calibration_page.set_side_camera_status("Waiting for Larix to stream to the RTMP URL.")
+            self.connection_page.update_side_camera_status(True, "RTMP relay ready")
         if self.side_camera_worker and self.side_camera_worker.isRunning():
             self.log("Side camera already running.")
             return
@@ -656,29 +654,33 @@ class MainWindow(QMainWindow):
         image = QImage(frame.data, w, h, frame.strides[0], QImage.Format_BGR888).copy()
         self.calibration_page.side_camera_view.set_frame(QPixmap.fromImage(image), (w, h))
 
-    def start_webrtc_side_receiver(self) -> None:
-        if self.whip_receiver and self.whip_receiver.isRunning():
+    def start_rtmp_side_relay(self) -> None:
+        if self.rtmp_relay and self.rtmp_relay.isRunning():
             return
-        from .webrtc_side_receiver import WhipSideCameraReceiver
+        from .rtmp_side_receiver import RtmpSideCameraRelay
 
-        port = int(self.settings.get("sideCameraWhipPort", 8899))
-        self.whip_receiver = WhipSideCameraReceiver(port=port)
-        self.whip_receiver.ingest_url_ready.connect(self.on_webrtc_ingest_url_ready)
-        self.whip_receiver.camera_status.connect(self.on_side_camera_status)
-        self.whip_receiver.frame_ready.connect(self.on_side_camera_frame)
-        self.whip_receiver.start()
+        rtmp_port = int(self.settings.get("sideCameraRtmpPort", 1935))
+        mjpeg_port = int(self.settings.get("sideCameraMjpegPort", 8090))
+        self.rtmp_relay = RtmpSideCameraRelay(rtmp_port=rtmp_port, mjpeg_port=mjpeg_port)
+        self.rtmp_relay.ingest_url_ready.connect(self.on_rtmp_ingest_url_ready)
+        self.rtmp_relay.capture_url_ready.connect(self.on_rtmp_capture_url_ready)
+        self.rtmp_relay.relay_status.connect(self.on_side_camera_status)
+        self.rtmp_relay.start()
 
-    def stop_webrtc_side_receiver(self) -> None:
-        if self.whip_receiver:
-            self.whip_receiver.stop()
-            self.whip_receiver = None
+    def stop_rtmp_side_relay(self) -> None:
+        if self.rtmp_relay:
+            self.rtmp_relay.stop()
+            self.rtmp_relay = None
 
-    def on_webrtc_ingest_url_ready(self, ingest_url: str) -> None:
+    def on_rtmp_ingest_url_ready(self, ingest_url: str) -> None:
         self.settings["sideCameraUrl"] = ingest_url
         save_settings(self.settings)
         self.connection_page.side_camera_url.setText(ingest_url)
         self.calibration_page.set_side_camera_url(ingest_url)
-        self.log(f"Larix WebRTC URL ready: {ingest_url}")
+        self.log(f"Larix RTMP URL ready: {ingest_url}")
+
+    def on_rtmp_capture_url_ready(self, capture_url: str) -> None:
+        self.side_capture_url = capture_url
 
     def on_camera_status(self, online: bool, message: str) -> None:
         self.webcam_tested = True
