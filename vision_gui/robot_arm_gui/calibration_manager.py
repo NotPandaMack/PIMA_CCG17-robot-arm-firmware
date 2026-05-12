@@ -138,7 +138,7 @@ def table_z_calibrated(calibration: dict[str, Any]) -> bool:
     table_z = calibration.get("tableZ")
     if not isinstance(table_z, dict):
         return False
-    if table_z.get("method") in {"side_view_visual_fit", "realsense_depth_plane_anchor_fit"} and _finite(table_z.get("z")):
+    if table_z.get("method") in {"side_view_visual_fit", "realsense_depth_plane_anchor_fit", "realsense_two_sample", "direct_jog"} and _finite(table_z.get("z")):
         return True
     points = table_z.get("points")
     usable = [point for point in points or [] if isinstance(point, dict) and all(_finite(point.get(k)) for k in ("x", "y", "z"))]
@@ -229,7 +229,7 @@ def estimate_table_z(calibration: dict[str, Any], x: float, y: float) -> float:
     import numpy as np
 
     table_z = calibration.get("tableZ") if isinstance(calibration.get("tableZ"), dict) else {}
-    if table_z.get("method") in {"side_view_visual_fit", "realsense_depth_plane_anchor_fit"} and _finite(table_z.get("z")):
+    if table_z.get("method") in {"side_view_visual_fit", "realsense_depth_plane_anchor_fit", "realsense_two_sample", "direct_jog"} and _finite(table_z.get("z")):
         return float(table_z["z"])
     points = table_z.get("points", [])
     usable = []

@@ -151,6 +151,13 @@ class VisionSafetyTests(unittest.TestCase):
         self.assertTrue(plan["ok"])
         self.assertEqual(40.0, plan["calculated"]["hoverZ"])
 
+    def test_direct_jog_table_z_is_used(self):
+        calibration = calibrated(tableZ={"method": "direct_jog", "z": 120.0, "zAxisInverted": True, "hoverRefZ": 60.0})
+        self.assertEqual(120.0, get_table_z(calibration, 35.0, 210.0))
+        plan = build_pick_plan(fresh_target(), VisionConfig(), calibration, hover_only=True)
+        self.assertTrue(plan["ok"])
+        self.assertEqual(40.0, plan["calculated"]["hoverZ"])
+
 
 if __name__ == "__main__":
     unittest.main()

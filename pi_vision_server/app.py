@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .calibration import (
     DEFAULT_CALIBRATION_PATH,
+    fit_direct_jog_table_z,
     load_calibration,
     reset_calibration,
     save_calibration,
@@ -33,6 +34,10 @@ _esp_cache: dict[str, Any] = {}
 _esp_cache_ts: float = 0.0
 _esp_cache_lock = threading.Lock()
 _ESP_CACHE_TTL = 1.0  # seconds
+
+
+# Session state for jog-based Z calibration captures (not persisted until fit-z is called)
+_z_jog_captures: list[dict[str, Any]] = []
 
 
 def _get_cached_esp_status(base_url: str) -> dict[str, Any]:
@@ -234,3 +239,59 @@ def esp_status() -> dict[str, Any]:
         return _get_cached_esp_status(config.esp_base_url)
     except Exception as error:
         raise HTTPException(status_code=503, detail=f"ESP unreachable: {error}") from error
+
+
+# --- Jog-based Z calibration ---
+# The user jogs the arm to key positions using the WebUI IK controls, then clicks
+# "Capture" buttons. No depth camera or image clicks required — the ESP reports
+# the exact arm position, which is ground truth for Z calibration.
+
+@app.post("/vision/calibration/z-capture")
+async def z_capture(request: Request) -> dict[str, Any]:
+    global _z_jog_captures
+    payload = await request.json()
+    role = payload.get("role")
+    if role not in ("table", "hover"):
+        raise HTTPException(status_code=400, detail="role must be 'table' or 'hover'")
+    robot_y = payload.get("robotY")
+    robot_z = payload.get("robotZ")
+    if not isinstance(robot_y, (int, float)) or not isinstance(robot_z, (int, float)):
+        raise HTTPException(status_code=400, detail="robotY and robotZ must be numbers")
+    capture = {"role": role, "robotY": float(robot_y), "robotZ": float(robot_z)}
+    _z_jog_captures.append(capture)
+    logger.info("Z jog capture: role=%s Y=%.1f Z=%.1f", role, robot_y, robot_z)
+    return {"ok": True, "captures": list(_z_jog_captures)}
+
+
+@app.get("/vision/calibration/z-captures")
+def get_z_captures() -> dict[str, Any]:
+    return {"ok": True, "captures": list(_z_jog_captures)}
+
+
+@app.post("/vision/calibration/z-captures/clear")
+def clear_z_captures() -> dict[str, Any]:
+    global _z_jog_captures
+    _z_jog_captures = []
+    return {"ok": True, "captures": []}
+
+
+@app.post("/vision/calibration/fit-z")
+async def fit_z(request: Request) -> dict[str, Any]:
+    global _z_jog_captures
+    payload = await request.json()
+    hover_clearance_mm = float(payload.get("hoverClearanceMm", 60.0))
+    if not _z_jog_captures:
+        raise HTTPException(status_code=400, detail="no Z captures — jog the arm to key positions and capture them first")
+    try:
+        table_z_dict = fit_direct_jog_table_z(_z_jog_captures, hover_clearance_mm=hover_clearance_mm)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    calibration = load_calibration()
+    calibration["tableZ"] = table_z_dict
+    calibration["zAxisInverted"] = bool(table_z_dict["zAxisInverted"])
+    if calibration.get("status") != "calibrated" and isinstance(calibration.get("homography"), list) and calibration["homography"]:
+        calibration["status"] = "calibrated"
+    save_calibration(calibration)
+    _z_jog_captures = []
+    logger.info("Saved direct-jog Z calibration: tableZ=%.1f zAxisInverted=%s", table_z_dict["z"], table_z_dict["zAxisInverted"])
+    return {"ok": True, "tableZ": table_z_dict, "calibration": calibration}

@@ -65,6 +65,67 @@ def reset_calibration(path: Path = DEFAULT_CALIBRATION_PATH) -> dict[str, Any]:
     return calibration
 
 
+_JOG_CALIBRATED_METHODS = {"side_view_visual_fit", "realsense_depth_plane_anchor_fit", "realsense_two_sample", "direct_jog"}
+
+
+def fit_direct_jog_table_z(
+    captures: list[dict[str, Any]],
+    hover_clearance_mm: float = 60.0,
+) -> dict[str, Any]:
+    """Fit tableZ from arm positions captured by jogging — no depth camera needed.
+
+    captures is a list of {role, robotY, robotZ} dicts where:
+      role="table" — arm positioned at near-table (this IS the table Z reference)
+      role="hover" — arm positioned at safe hover height (one or more, at different Y for slope)
+    """
+    table_caps = [c for c in captures if isinstance(c, dict) and c.get("role") == "table"]
+    hover_caps = [c for c in captures if isinstance(c, dict) and c.get("role") == "hover"]
+
+    if not table_caps:
+        raise ValueError("at least one table capture is required (jog arm near table, click Capture Table Z)")
+    if not hover_caps:
+        raise ValueError("at least one hover capture is required (jog arm to safe hover height, click Capture Hover Z)")
+
+    table_z = sum(float(c["robotZ"]) for c in table_caps) / len(table_caps)
+
+    # Detect z_axis_inverted: if hover robotZ < table robotZ, the arm is physically higher
+    # at a smaller Z number → inverted convention (higher Z = lower physically)
+    hover_z_vals = [float(c["robotZ"]) for c in hover_caps]
+    avg_hover_z = sum(hover_z_vals) / len(hover_z_vals)
+    z_axis_inverted = avg_hover_z < table_z
+
+    # Sort hover captures: for inverted, largest Y = arm most extended = most constrained
+    sorted_hover = sorted(hover_caps, key=lambda c: float(c.get("robotY", 0.0)), reverse=True)
+    ref_hover = sorted_hover[0]  # worst-case (most extended Y) hover as the reference
+    hover_ref_z = float(ref_hover["robotZ"])
+    hover_ref_y = float(ref_hover.get("robotY", 0.0))
+
+    result: dict[str, Any] = {
+        "method": "direct_jog",
+        "z": float(table_z),
+        "zAxisInverted": bool(z_axis_inverted),
+        "hoverRefZ": hover_ref_z,
+        "hoverRefY": hover_ref_y,
+        "captures": captures,
+    }
+
+    # If hover captures span at least 5mm of Y range, compute Y-dependent slope
+    hover_with_y = [(float(c.get("robotY", 0.0)), float(c["robotZ"])) for c in hover_caps if _finite(c.get("robotY"))]
+    if len(hover_with_y) >= 2:
+        ys = [p[0] for p in hover_with_y]
+        if max(ys) - min(ys) >= 5.0:
+            # Linear fit: hoverZ = hoverRefZ + slope * (Y - hoverRefY)
+            y_mean = sum(ys) / len(ys)
+            zs = [p[1] for p in hover_with_y]
+            z_mean = sum(zs) / len(zs)
+            num = sum((y - y_mean) * (z - z_mean) for y, z in hover_with_y)
+            den = sum((y - y_mean) ** 2 for y in ys)
+            if abs(den) > 1e-9:
+                result["hoverSlopeZperY"] = float(num / den)
+
+    return result
+
+
 def calibration_status(calibration: dict[str, Any]) -> CalibrationStatus:
     homography = calibration.get("homography")
     has_homography = (
@@ -76,7 +137,7 @@ def calibration_status(calibration: dict[str, Any]) -> CalibrationStatus:
     table_z = calibration.get("tableZ") if isinstance(calibration.get("tableZ"), dict) else {}
     table_points = table_z.get("points", [])
     table_z_status = "placeholder"
-    if table_z.get("method") in {"side_view_visual_fit", "realsense_depth_plane_anchor_fit", "realsense_two_sample"} and _finite(table_z.get("z")):
+    if table_z.get("method") in _JOG_CALIBRATED_METHODS and _finite(table_z.get("z")):
         table_z_status = "calibrated"
     elif isinstance(table_points, list) and len(table_points) >= 3:
         table_z_status = "calibrated"
@@ -91,7 +152,7 @@ def calibration_status(calibration: dict[str, Any]) -> CalibrationStatus:
 
 def get_table_z(calibration: dict[str, Any], x: float, y: float) -> float | None:
     table_z = calibration.get("tableZ") if isinstance(calibration.get("tableZ"), dict) else {}
-    if table_z.get("method") in {"side_view_visual_fit", "realsense_depth_plane_anchor_fit", "realsense_two_sample"} and _finite(table_z.get("z")):
+    if table_z.get("method") in _JOG_CALIBRATED_METHODS and _finite(table_z.get("z")):
         return float(table_z["z"])
     points = table_z.get("points", [])
     if not isinstance(points, list) or len(points) < 3:

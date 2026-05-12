@@ -15,6 +15,7 @@ from vision_gui.robot_arm_gui.calibration_manager import (
     estimate_table_z,
 )
 from vision_gui.robot_arm_gui.calibration_markers import detect_side_board_markers
+from pi_vision_server.calibration import fit_direct_jog_table_z
 from vision_gui.robot_arm_gui.realsense_depth import (
     deproject_pixel_to_point_mm,
     fit_realsense_table_z,
@@ -203,6 +204,42 @@ class GuiCalibrationTests(unittest.TestCase):
         )
         self.assertAlmostEqual(120.0, result["z"], delta=2.0)
         self.assertLess(result["fit"]["errorMm"], 5.0)
+
+    def test_direct_jog_calibration_inverted(self):
+        result = fit_direct_jog_table_z([
+            {"role": "table", "robotY": 200.0, "robotZ": 140.0},
+            {"role": "hover", "robotY": 200.0, "robotZ": 80.0},
+        ])
+        self.assertEqual("direct_jog", result["method"])
+        self.assertTrue(result["zAxisInverted"])   # hoverZ 80 < tableZ 140 → inverted
+        self.assertAlmostEqual(140.0, result["z"])
+        self.assertAlmostEqual(80.0, result["hoverRefZ"])
+
+    def test_direct_jog_calibration_not_inverted(self):
+        result = fit_direct_jog_table_z([
+            {"role": "table", "robotY": 200.0, "robotZ": 20.0},
+            {"role": "hover", "robotY": 200.0, "robotZ": 80.0},
+        ])
+        self.assertFalse(result["zAxisInverted"])  # hoverZ 80 > tableZ 20 → not inverted
+        self.assertAlmostEqual(20.0, result["z"])
+
+    def test_direct_jog_calibration_y_slope(self):
+        # Two hover captures at different Y → slope should be computed
+        result = fit_direct_jog_table_z([
+            {"role": "table", "robotY": 200.0, "robotZ": 140.0},
+            {"role": "hover", "robotY": 200.0, "robotZ": 80.0},   # high Y, reference
+            {"role": "hover", "robotY": 120.0, "robotZ": 100.0},  # low Y, easier hover
+        ])
+        # With inverted: at higher Y the elbow drops, requiring lower Z (bigger number = lower for inverted)
+        # slope = (Z_at_high_Y - Z_at_low_Y) / (high_Y - low_Y) = (80 - 100) / (200 - 120) = -0.25
+        self.assertIn("hoverSlopeZperY", result)
+        self.assertAlmostEqual(-0.25, result["hoverSlopeZperY"], delta=0.01)
+
+    def test_direct_jog_calibration_requires_both_roles(self):
+        with self.assertRaises(ValueError):
+            fit_direct_jog_table_z([{"role": "table", "robotY": 200.0, "robotZ": 140.0}])
+        with self.assertRaises(ValueError):
+            fit_direct_jog_table_z([{"role": "hover", "robotY": 200.0, "robotZ": 80.0}])
 
     @unittest.skipUnless(HAS_OPENCV, "OpenCV and NumPy are not installed")
     def test_ransac_plane_fit_ignores_objects_on_table(self):
