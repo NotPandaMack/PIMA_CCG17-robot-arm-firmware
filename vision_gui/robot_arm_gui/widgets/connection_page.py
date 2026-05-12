@@ -39,7 +39,7 @@ class ConnectionPage(QWidget):
         hero_layout = QVBoxLayout(hero)
         title = QLabel("Welcome to Robot Arm Setup")
         title.setObjectName("heroTitle")
-        subtitle = QLabel("Main PC webcam -> Raspberry Pi safety server -> ESP robot arm")
+        subtitle = QLabel("RealSense D415 overhead depth camera -> Raspberry Pi safety server -> ESP robot arm")
         subtitle.setObjectName("mutedText")
         self.start_button = QPushButton("Start Setup")
         self.start_button.setObjectName("primaryButton")
@@ -67,7 +67,7 @@ class ConnectionPage(QWidget):
         form.addRow("Raspberry Pi URL", self.pi_url)
         form.addRow("Website/Pi UI URL", self.website_url)
         form.addRow("ESP URL", self.esp_url)
-        form.addRow("Webcam index", self.camera_index)
+        form.addRow("Advanced webcam fallback index", self.camera_index)
         form.addRow("DroidCam side camera URL", self.side_camera_url)
         form.addRow("", self.mock_pi)
         form.addRow("", self.fake_esp)
@@ -76,7 +76,7 @@ class ConnectionPage(QWidget):
         self.auto_detect_button = QPushButton("Auto-detect Pi")
         self.test_pi_button = QPushButton("Test Pi Connection")
         self.test_esp_button = QPushButton("Test ESP Connection")
-        self.test_camera_button = QPushButton("Test Webcam")
+        self.test_camera_button = QPushButton("Test RealSense D415")
         self.test_side_camera_button = QPushButton("Test Side Camera")
         self.save_button = QPushButton("Save Settings")
         self.save_button.setObjectName("primaryButton")
@@ -103,7 +103,7 @@ class ConnectionPage(QWidget):
         status_layout.addWidget(QLabel("Connection Status"))
         self.pi_status = StatusPill("Pi disconnected", "red")
         self.esp_status = StatusPill("ESP disconnected", "red")
-        self.camera_status = StatusPill("Camera disconnected", "red")
+        self.camera_status = StatusPill("D415 disconnected", "red")
         self.side_camera_status = StatusPill("Side camera disconnected", "red")
         status_layout.addWidget(self.pi_status)
         status_layout.addWidget(self.esp_status)
@@ -141,7 +141,7 @@ class ConnectionPage(QWidget):
     def update_statuses(self, pi: bool, esp: bool, camera: bool) -> None:
         self.pi_status.set_state("Pi connected" if pi else "Pi disconnected", "green" if pi else "red")
         self.esp_status.set_state("ESP connected" if esp else "ESP disconnected", "green" if esp else "red")
-        self.camera_status.set_state("Camera connected" if camera else "Camera disconnected", "green" if camera else "red")
+        self.camera_status.set_state("D415 connected" if camera else "D415 disconnected", "green" if camera else "red")
 
     def update_side_camera_status(self, connected: bool | None, message: str | None = None) -> None:
         if connected is None:

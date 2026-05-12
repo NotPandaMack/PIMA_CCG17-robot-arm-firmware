@@ -25,7 +25,7 @@ def empty_calibration() -> dict[str, Any]:
         "status": "not_calibrated",
         "createdAt": None,
         "zAxisInverted": True,
-        "camera": {"width": None, "height": None},
+        "camera": {"type": "realsense_d415", "width": None, "height": None},
         "origin": None,
         "pickupPitchDeg": None,
         "homography": [],
@@ -76,7 +76,7 @@ def calibration_status(calibration: dict[str, Any]) -> CalibrationStatus:
     table_z = calibration.get("tableZ") if isinstance(calibration.get("tableZ"), dict) else {}
     table_points = table_z.get("points", [])
     table_z_status = "placeholder"
-    if table_z.get("method") == "side_view_visual_fit" and _finite(table_z.get("z")):
+    if table_z.get("method") in {"side_view_visual_fit", "realsense_depth_plane_anchor_fit"} and _finite(table_z.get("z")):
         table_z_status = "calibrated"
     elif isinstance(table_points, list) and len(table_points) >= 3:
         table_z_status = "calibrated"
@@ -91,7 +91,7 @@ def calibration_status(calibration: dict[str, Any]) -> CalibrationStatus:
 
 def get_table_z(calibration: dict[str, Any], x: float, y: float) -> float | None:
     table_z = calibration.get("tableZ") if isinstance(calibration.get("tableZ"), dict) else {}
-    if table_z.get("method") == "side_view_visual_fit" and _finite(table_z.get("z")):
+    if table_z.get("method") in {"side_view_visual_fit", "realsense_depth_plane_anchor_fit"} and _finite(table_z.get("z")):
         return float(table_z["z"])
     points = table_z.get("points", [])
     if not isinstance(points, list) or len(points) < 3:

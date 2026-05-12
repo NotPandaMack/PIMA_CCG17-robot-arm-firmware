@@ -134,6 +134,13 @@ class VisionSafetyTests(unittest.TestCase):
         self.assertEqual(120.0, plan["calculated"]["tableZ"])
         self.assertEqual(40.0, plan["calculated"]["hoverZ"])
 
+    def test_realsense_table_z_is_used(self):
+        calibration = calibrated(tableZ={"method": "realsense_depth_plane_anchor_fit", "z": 120.0, "samples": []})
+        self.assertEqual(120.0, get_table_z(calibration, 35.0, 210.0))
+        plan = build_pick_plan(fresh_target(), VisionConfig(), calibration, hover_only=True)
+        self.assertTrue(plan["ok"])
+        self.assertEqual(40.0, plan["calculated"]["hoverZ"])
+
 
 if __name__ == "__main__":
     unittest.main()

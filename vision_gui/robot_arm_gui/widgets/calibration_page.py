@@ -24,15 +24,16 @@ from PySide6.QtWidgets import (
 from ..calibration_markers import MARKER_DEFINITIONS, mapping_warnings
 from ..calibration_manager import fit_side_view_table_z, table_relative_z_values
 from ..config import DEFAULT_SIDE_CAMERA_URL, DEFAULT_WORKSPACE
+from ..realsense_depth import fit_realsense_table_z
 from .camera_page import CameraView
 
 
 CALIBRATION_STEPS = [
-    ("Camera Placement", "Mount your webcam so the full reachable table area, robot base, and all four marker locations are visible."),
+    ("D415 Placement", "Mount the RealSense D415 overhead so the full reachable table area, robot base, and all four marker locations are visible."),
     ("Define Robot Origin", "Click the robot base center projected onto the table. This becomes robot coordinate X=0, Y=0."),
     ("Four-Point Table Mapping", "Place each marker, enter its real robot/table X/Y coordinate in millimeters, then click it in the camera image."),
     ("Workspace Bounds", "These safety limits stop the robot from accepting targets outside the reachable box."),
-    ("Side-View Table Z Calibration", "Display the monitor board full-screen behind the robot, start the DroidCam side camera, set the table line, then save safe visual claw-height samples. The GUI never moves or lowers the arm."),
+    ("D415 Table Height Calibration", "Learn the table plane from overhead depth, then save three safe claw-height samples. The GUI never moves or lowers the arm."),
     ("Pickup Pose", "Use the website 2D IK simulator or Specific Joint Adjustment to make a good pickup pose, then save the current control/ESP pose and claw values."),
     ("Calibration Validation", "Click a table point. The app converts it to robot coordinates and can generate a hover preview."),
     ("Finish Calibration", "Save calibration locally and upload it to the Pi server."),
@@ -56,6 +57,8 @@ class CalibrationPage(QWidget):
     stop_side_camera_requested = Signal()
     detect_side_board_requested = Signal()
     save_side_sample_requested = Signal()
+    learn_realsense_table_requested = Signal()
+    save_realsense_anchor_requested = Signal()
     start_auto_calibration_requested = Signal()
     sample_claw_color_requested = Signal(int, int)
     save_pickup_requested = Signal()
@@ -83,6 +86,11 @@ class CalibrationPage(QWidget):
         self.side_board_markers: list[dict] = []
         self.side_board_detection: dict | None = None
         self.side_fit: dict | None = None
+        self.realsense_table_plane: dict | None = None
+        self.realsense_samples: list[dict] = []
+        self.realsense_fit: dict | None = None
+        self.depth_pending_tip: tuple[int, int] | None = None
+        self.depth_metadata: dict | None = None
         self.claw_marker_hsv: dict | None = None
         self.claw_marker: dict | None = None
         self._side_table_clicks: list[tuple[int, int]] = []
@@ -102,6 +110,10 @@ class CalibrationPage(QWidget):
         self.progress.setRange(0, len(CALIBRATION_STEPS))
         self.grid_overlay = QCheckBox("Show calibration grid overlay")
         self.camera_view = CameraView()
+        self.depth_view = CameraView()
+        self.depth_view.setMinimumSize(860, 520)
+        self.plane_view = CameraView()
+        self.plane_view.setMinimumSize(860, 520)
         self.side_camera_view = CameraView()
         self.side_camera_view.setMinimumSize(860, 520)
         self.side_camera_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -121,6 +133,8 @@ class CalibrationPage(QWidget):
         side_layout.addWidget(side_hint)
         side_layout.addWidget(self.side_camera_view, 1)
         self.preview_tabs.addTab(top_tab, "Top Camera")
+        self.preview_tabs.addTab(self.depth_view, "Depth")
+        self.preview_tabs.addTab(self.plane_view, "Table Plane")
         self.preview_tabs.addTab(side_tab, "Side View")
 
         left_layout.addWidget(self.title)
@@ -186,6 +200,12 @@ class CalibrationPage(QWidget):
         self.step_changed.emit(self.step_index)
 
     def capture_click(self, x: int, y: int, debug: dict | None = None) -> None:
+        if hasattr(self, "depth_click_mode") and self.depth_click_mode.currentData() == "anchor" and self.step_index not in (1, 2, 6):
+            self.depth_pending_tip = (x, y)
+            self.depth_tip_status.setText(f"Pending D415 claw-tip click: {x}, {y}. Capture a high/medium/low sample next.")
+            self.camera_view.set_marker(x, y, "D415 claw tip")
+            self.update_wizard_status()
+            return
         if self.step_index == 1:
             self.origin_pixel = (x, y)
             self.origin_label.setText(f"Origin pixel: {x}, {y}")
@@ -207,6 +227,11 @@ class CalibrationPage(QWidget):
                 )
             else:
                 self.validation_label.setText(f"Clicked pixel: {x}, {y}")
+        elif hasattr(self, "depth_click_mode") and self.depth_click_mode.currentData() == "anchor":
+            self.depth_pending_tip = (x, y)
+            self.depth_tip_status.setText(f"Pending D415 claw-tip click: {x}, {y}. Capture a high/medium/low sample next.")
+            self.camera_view.set_marker(x, y, "D415 claw tip")
+            self.update_wizard_status()
 
     def current_marker_label(self) -> str:
         return str(self.current_marker.currentData() or MAPPING_DEFAULTS[0][0])
@@ -433,11 +458,105 @@ class CalibrationPage(QWidget):
             self.side_stream_url.setText(stream_url)
 
     def table_z(self) -> dict:
+        if self.realsense_fit and self.realsense_fit.get("method") == "realsense_depth_plane_anchor_fit":
+            return self.realsense_fit
         if self.side_fit and self.side_fit.get("method") == "side_view_visual_fit":
             return self.side_fit
         if len(self.table_points) >= 3:
             return {"method": "plane", "points": self.table_points}
         return {"method": "placeholder", "z": 0.0, "points": self.table_points}
+
+    def set_realsense_status(self, text: str) -> None:
+        self.realsense_status.setText(text)
+        self.update_wizard_status()
+
+    def set_realsense_metadata(self, metadata: dict | None, intrinsics: dict | None, depth_scale: float | None) -> None:
+        self.depth_metadata = {"metadata": metadata or {}, "intrinsics": intrinsics or {}, "depthScale": depth_scale}
+        serial = (metadata or {}).get("serial", "unknown")
+        scale_text = f"{float(depth_scale):.6f}" if isinstance(depth_scale, (int, float)) else "unknown"
+        self.depth_info_status.setText(f"D415 metadata: serial {serial}, depth scale {scale_text}.")
+
+    def apply_realsense_table_plane(self, table_plane: dict) -> None:
+        self.realsense_table_plane = table_plane
+        self.depth_table_status.setText(
+            f"Table plane learned: {int(table_plane.get('inlierCount', 0))} depth points, "
+            f"RMS {float(table_plane.get('rmsErrorMm', 0.0)):.1f} mm."
+        )
+        self._update_realsense_fit()
+        self.update_wizard_status()
+
+    def add_realsense_sample(self, status: dict, sample_info: dict) -> None:
+        if self.depth_pending_tip is None:
+            raise ValueError("click the visible claw tip in the D415 color view before saving")
+        if not isinstance(status.get("z"), (int, float)):
+            raise ValueError("no valid ESP pose or website IK draft Z is available")
+        x, y = self.depth_pending_tip
+        sample = {
+            "robotZ": float(status["z"]),
+            "pixel": {"x": int(x), "y": int(y)},
+            "depthMm": float(sample_info["depthMm"]),
+            "cameraPointMm": sample_info["cameraPointMm"],
+            "heightAboveTableMm": float(sample_info["heightAboveTableMm"]),
+            "source": status.get("source", "unknown source"),
+        }
+        if status.get("manualControlState"):
+            sample["manualControlState"] = status["manualControlState"]
+        if status.get("espStatus"):
+            sample["espStatus"] = status["espStatus"]
+        self.realsense_samples.append(sample)
+        self.depth_pending_tip = None
+        self.depth_tip_status.setText("Pending D415 claw-tip click: none.")
+        self.camera_view.set_marker(None, None)
+        self._update_realsense_fit()
+
+    def _update_realsense_fit(self) -> None:
+        if not self.realsense_table_plane or len(self.realsense_samples) < 3:
+            self.realsense_fit = None
+            self.depth_fit_status.setText(f"Table height learned: no. Samples: {len(self.realsense_samples)} / 3 minimum.")
+            self._update_realsense_sample_cards()
+            return
+        try:
+            self.realsense_fit = fit_realsense_table_z(
+                samples=self.realsense_samples,
+                table_plane=self.realsense_table_plane,
+                safety_margin_mm=self.side_safety_margin.value(),
+                z_axis_inverted=True,
+            )
+        except Exception as error:
+            self.realsense_fit = None
+            self.depth_fit_status.setText(f"Table height learned: no. {error}")
+            self._update_realsense_sample_cards()
+            return
+        z_values = table_relative_z_values(float(self.realsense_fit["z"]), z_axis_inverted=True)
+        self.realsense_fit.update(z_values)
+        self.realsense_fit.update(
+            {
+                "minimumClearanceMm": 10.0,
+                "hoverClearanceMm": 60.0,
+                "approachClearanceMm": 15.0,
+                "liftClearanceMm": 90.0,
+            }
+        )
+        self.depth_fit_status.setText(
+            f"Table height learned: yes. tableZ {self.realsense_fit['z']:.1f} mm, "
+            f"error {float(self.realsense_fit.get('fit', {}).get('errorMm', 0.0)):.1f} mm."
+        )
+        self.validation_summary.setText(
+            f"D415 table height learned. tableZ {self.realsense_fit['z']:.1f}, "
+            f"safeHoverZ {self.realsense_fit['safeHoverZ']:.1f}, "
+            f"lowApproachZ {self.realsense_fit['lowApproachZ']:.1f}, liftZ {self.realsense_fit['liftZ']:.1f}."
+        )
+        self._update_realsense_sample_cards()
+        self.update_wizard_status()
+
+    def _update_realsense_sample_cards(self) -> None:
+        self.depth_samples_status.setText(
+            "\n".join(
+                f"S{index}: robotZ {sample['robotZ']:.1f}, height {sample['heightAboveTableMm']:.1f} mm, px {sample['pixel']['x']}, {sample['pixel']['y']}"
+                for index, sample in enumerate(self.realsense_samples, start=1)
+            )
+            or "No D415 depth anchor samples saved."
+        )
 
     def _update_side_fit(self) -> None:
         if not self.side_table_line or len(self.side_samples) < 3:
@@ -541,24 +660,22 @@ class CalibrationPage(QWidget):
         state = state or {}
         values = {
             "top_camera": bool(state.get("top_camera")),
+            "depth": bool(self.depth_metadata) or bool(state.get("depth")),
             "top_markers": len(self.mapping_pixels) == 4,
             "origin": self.origin_pixel is not None,
-            "side_camera": (hasattr(self, "side_camera_status") and "running" in self.side_camera_status.text().lower()) or bool(state.get("side_camera")),
-            "board": bool(self.side_board_detection),
-            "table_line": self.side_table_line is not None,
-            "claw": bool(self.claw_marker or self.side_pending_tip),
+            "plane": self.realsense_table_plane is not None,
+            "anchors": self.realsense_fit is not None,
             "website": bool(state.get("website")),
             "esp": bool(state.get("esp")),
             "saved": bool(state.get("saved")),
         }
         labels = {
-            "top_camera": "Top camera ready",
+            "top_camera": "D415 color ready",
+            "depth": "D415 depth ready",
             "top_markers": "Top markers detected",
             "origin": "Robot base clicked",
-            "side_camera": "Side camera ready",
-            "board": "Monitor board detected",
-            "table_line": "Table line set",
-            "claw": "Claw marker ready",
+            "plane": "Table plane learned",
+            "anchors": "Depth anchors saved",
             "website": "Website connected",
             "esp": "ESP pose readable",
             "saved": "Calibration saved",
@@ -569,21 +686,18 @@ class CalibrationPage(QWidget):
 
     def _wizard_next_action(self, values: dict[str, bool]) -> str:
         for key, text in [
-            ("top_camera", "Start Auto Calibration to start the top camera."),
+            ("top_camera", "Start Auto Calibration to start the D415 overhead camera."),
+            ("depth", "Connect the D415 over USB 3 and wait for depth frames."),
             ("top_markers", "Place FL, FR, BL, BR markers in view; the wizard will scan them."),
             ("origin", "Click the center of the robot's rotating base in the top camera view."),
-            ("side_camera", "Start the DroidCam side camera."),
-            ("board", "Move phone or monitor until the side board is fully visible, then detect the board."),
-            ("table_line", "Click two points along the table surface line in the side view."),
-            ("claw", "Sample the bright claw marker color or click the claw tip manually."),
+            ("plane", "Click Learn Table Plane after the table markers are detected."),
+            ("anchors", "Use the website to move to high, medium, and low safe positions; click the claw tip and capture each sample."),
         ]:
             if not values[key]:
                 return text
-        if len(self.side_samples) < 3:
-            return "Use the website to move to high, medium, then low safe positions and capture each sample."
-        if self.side_fit:
+        if self.realsense_fit:
             return "Review the validation summary and send calibration to the backend."
-        return "Need a valid side Z fit from the saved samples."
+        return "Need a valid D415 depth Z fit from the saved samples."
 
     def _auto_wizard_panel(self) -> QWidget:
         page = QFrame()
@@ -602,7 +716,7 @@ class CalibrationPage(QWidget):
 
         grid = QGridLayout()
         self.wizard_status_labels: dict[str, QLabel] = {}
-        for index, key in enumerate(("top_camera", "top_markers", "origin", "side_camera", "board", "table_line", "claw", "website", "esp", "saved")):
+        for index, key in enumerate(("top_camera", "depth", "top_markers", "origin", "plane", "anchors", "website", "esp", "saved")):
             label = QLabel("[ ]")
             label.setWordWrap(True)
             self.wizard_status_labels[key] = label
@@ -611,12 +725,50 @@ class CalibrationPage(QWidget):
 
         action_row = QHBoxLayout()
         self.detect_top_button = QPushButton("Scan Top Markers")
+        self.learn_depth_plane_button = QPushButton("Learn Table Plane")
         self.detect_side_button = QPushButton("Detect Side Board")
         self.detect_top_button.clicked.connect(self.scan_aruco_requested.emit)
+        self.learn_depth_plane_button.clicked.connect(self.learn_realsense_table_requested.emit)
         self.detect_side_button.clicked.connect(self.detect_side_board_requested.emit)
         action_row.addWidget(self.detect_top_button)
-        action_row.addWidget(self.detect_side_button)
+        action_row.addWidget(self.learn_depth_plane_button)
         layout.addLayout(action_row)
+
+        depth_box = QFrame()
+        depth_box.setObjectName("subPanel")
+        depth_layout = QVBoxLayout(depth_box)
+        self.realsense_status = QLabel("D415 depth camera stopped.")
+        self.realsense_status.setWordWrap(True)
+        self.depth_info_status = QLabel("D415 metadata: none.")
+        self.depth_info_status.setWordWrap(True)
+        self.depth_table_status = QLabel("Table plane learned: no.")
+        self.depth_tip_status = QLabel("Pending D415 claw-tip click: none.")
+        self.depth_tip_status.setWordWrap(True)
+        self.depth_fit_status = QLabel("Table height learned: no. Samples: 0 / 3 minimum.")
+        self.depth_fit_status.setWordWrap(True)
+        self.depth_click_mode = QComboBox()
+        self.depth_click_mode.addItem("Click robot origin / validation", "normal")
+        self.depth_click_mode.addItem("Click claw tip for D415 depth sample", "anchor")
+        depth_layout.addWidget(QLabel("RealSense D415 Overhead Depth"))
+        depth_layout.addWidget(self.realsense_status)
+        depth_layout.addWidget(self.depth_info_status)
+        depth_layout.addWidget(self.depth_table_status)
+        depth_layout.addWidget(self.depth_tip_status)
+        depth_layout.addWidget(self.depth_fit_status)
+        depth_layout.addWidget(self.depth_click_mode)
+        depth_sample_row = QHBoxLayout()
+        for text in ("Capture High Depth Sample", "Capture Medium Depth Sample", "Capture Low Depth Sample"):
+            button = QPushButton(text)
+            button.clicked.connect(self.save_realsense_anchor_requested.emit)
+            depth_sample_row.addWidget(button)
+        depth_layout.addLayout(depth_sample_row)
+        self.depth_samples_status = QLabel("No D415 depth anchor samples saved.")
+        self.depth_samples_status.setWordWrap(True)
+        depth_layout.addWidget(self.depth_samples_status)
+        layout.addWidget(depth_box)
+
+        self.side_fallback_toggle = QCheckBox("Show advanced side-camera fallback")
+        layout.addWidget(self.side_fallback_toggle)
 
         stream_box = QFrame()
         stream_box.setObjectName("subPanel")
@@ -674,7 +826,9 @@ class CalibrationPage(QWidget):
         status_layout.addWidget(self.side_samples_status)
         layout.addWidget(status_box)
 
-        claw_row = QHBoxLayout()
+        side_claw_widget = QWidget()
+        claw_row = QHBoxLayout(side_claw_widget)
+        claw_row.setContentsMargins(0, 0, 0, 0)
         self.auto_track_claw = QCheckBox("Auto-track claw marker")
         self.sample_claw_button = QPushButton("Sample claw marker color from click")
         self.reset_claw_button = QPushButton("Reset marker color")
@@ -683,16 +837,26 @@ class CalibrationPage(QWidget):
         claw_row.addWidget(self.auto_track_claw)
         claw_row.addWidget(self.sample_claw_button)
         claw_row.addWidget(self.reset_claw_button)
-        layout.addLayout(claw_row)
+        layout.addWidget(side_claw_widget)
         self.claw_color_status = QLabel("Claw marker color: not sampled.")
         layout.addWidget(self.claw_color_status)
 
-        sample_row = QHBoxLayout()
+        side_sample_widget = QWidget()
+        sample_row = QHBoxLayout(side_sample_widget)
+        sample_row.setContentsMargins(0, 0, 0, 0)
         for text in ("Capture High Sample", "Capture Medium Sample", "Capture Low Sample"):
             button = QPushButton(text)
             button.clicked.connect(self.save_side_sample_requested.emit)
             sample_row.addWidget(button)
-        layout.addLayout(sample_row)
+        layout.addWidget(side_sample_widget)
+        for widget in (stream_box, controls, status_box, side_claw_widget, self.claw_color_status, side_sample_widget):
+            widget.setVisible(False)
+        self.side_fallback_toggle.toggled.connect(stream_box.setVisible)
+        self.side_fallback_toggle.toggled.connect(controls.setVisible)
+        self.side_fallback_toggle.toggled.connect(status_box.setVisible)
+        self.side_fallback_toggle.toggled.connect(side_claw_widget.setVisible)
+        self.side_fallback_toggle.toggled.connect(self.claw_color_status.setVisible)
+        self.side_fallback_toggle.toggled.connect(side_sample_widget.setVisible)
         self.validation_summary = QLabel("Validation summary will appear after the Z fit is ready.")
         self.validation_summary.setWordWrap(True)
         layout.addWidget(self.validation_summary)

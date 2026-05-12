@@ -13,7 +13,7 @@ from .config import DEFAULT_WORKSPACE, LOCAL_CALIBRATION_PATH
 CHECKLIST_ITEMS: tuple[tuple[str, str], ...] = (
     ("pi_connected", "Pi server connected"),
     ("esp_connected", "ESP connected"),
-    ("webcam_connected", "Webcam connected"),
+    ("webcam_connected", "D415 connected"),
     ("object_detection_working", "Object detection working"),
     ("camera_calibration_complete", "Camera calibration complete"),
     ("workspace_bounds_saved", "Workspace bounds saved"),
@@ -71,7 +71,7 @@ def empty_calibration() -> dict[str, Any]:
         "status": "not_calibrated",
         "createdAt": None,
         "zAxisInverted": True,
-        "camera": {"width": None, "height": None},
+        "camera": {"type": "realsense_d415", "width": None, "height": None},
         "origin": None,
         "pickupPitchDeg": None,
         "skimZ": None,
@@ -138,7 +138,7 @@ def table_z_calibrated(calibration: dict[str, Any]) -> bool:
     table_z = calibration.get("tableZ")
     if not isinstance(table_z, dict):
         return False
-    if table_z.get("method") == "side_view_visual_fit" and _finite(table_z.get("z")):
+    if table_z.get("method") in {"side_view_visual_fit", "realsense_depth_plane_anchor_fit"} and _finite(table_z.get("z")):
         return True
     points = table_z.get("points")
     usable = [point for point in points or [] if isinstance(point, dict) and all(_finite(point.get(k)) for k in ("x", "y", "z"))]
@@ -187,7 +187,7 @@ def build_calibration(
             "status": "calibrated",
             "createdAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             "zAxisInverted": bool(z_axis_inverted),
-            "camera": {"width": int(camera_width), "height": int(camera_height)},
+            "camera": {"type": "realsense_d415", "width": int(camera_width), "height": int(camera_height)},
             "origin": {"pixel": {"x": int(origin_pixel[0]), "y": int(origin_pixel[1])}},
             "homography": homography.tolist(),
             "points": points,
@@ -229,7 +229,7 @@ def estimate_table_z(calibration: dict[str, Any], x: float, y: float) -> float:
     import numpy as np
 
     table_z = calibration.get("tableZ") if isinstance(calibration.get("tableZ"), dict) else {}
-    if table_z.get("method") == "side_view_visual_fit" and _finite(table_z.get("z")):
+    if table_z.get("method") in {"side_view_visual_fit", "realsense_depth_plane_anchor_fit"} and _finite(table_z.get("z")):
         return float(table_z["z"])
     points = table_z.get("points", [])
     usable = []

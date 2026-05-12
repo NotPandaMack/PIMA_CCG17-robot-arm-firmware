@@ -1,5 +1,6 @@
 PySide6>=6.7
 opencv-contrib-python>=4.9
+pyrealsense2>=2.55
 requests>=2.31
 numpy>=1.26
 qrcode[pil]>=7.4

@@ -49,6 +49,7 @@ from .config import DEFAULT_HSV_PROFILE, DEFAULT_SETTINGS, DEFAULT_SIDE_CAMERA_U
 from .detection_worker import DetectionResult, HSVProfile
 from .esp_client import EspClient
 from .pi_client import PiClient
+from .realsense_depth import deproject_pixel_to_point_mm, fit_table_plane_from_depth, height_above_table_mm, sample_depth_mm
 from .workers import TaskWorker
 from .website_client import WebsiteClient
 from .widgets.autonomous_page import AutonomousPage
@@ -125,9 +126,14 @@ class MainWindow(QMainWindow):
         self.last_frame_size: tuple[int, int] | None = None
         self.last_camera_frame: Any | None = None
         self.last_side_frame: Any | None = None
+        self.last_depth_frame: Any | None = None
+        self.last_depth_scale: float | None = None
+        self.last_realsense_intrinsics: dict[str, Any] | None = None
+        self.last_realsense_metadata: dict[str, Any] | None = None
         self.last_target_status = "none"
         self.last_send_at = 0.0
         self.camera_worker: Any | None = None
+        self.realsense_worker: Any | None = None
         self.side_camera_worker: Any | None = None
 
         self._build_ui()
@@ -230,7 +236,7 @@ class MainWindow(QMainWindow):
             "pi": StatusPill("Pi offline", "red"),
             "esp": StatusPill("ESP offline", "red"),
             "estop": StatusPill("ESTOP unknown", "yellow"),
-            "camera": StatusPill("Webcam offline", "red"),
+            "camera": StatusPill("D415 offline", "red"),
             "calibration": StatusPill("Not calibrated", "red"),
             "motion": StatusPill("Motion disabled", "yellow"),
             "target": StatusPill("Target none", "yellow"),
@@ -310,6 +316,8 @@ class MainWindow(QMainWindow):
         self.calibration_page.stop_side_camera_requested.connect(self.stop_side_camera)
         self.calibration_page.detect_side_board_requested.connect(self.detect_side_board)
         self.calibration_page.save_side_sample_requested.connect(self.save_side_sample)
+        self.calibration_page.learn_realsense_table_requested.connect(self.learn_realsense_table_plane)
+        self.calibration_page.save_realsense_anchor_requested.connect(self.save_realsense_anchor_sample)
         self.calibration_page.sample_claw_color_requested.connect(self.sample_claw_marker_color)
         self.calibration_page.save_pickup_requested.connect(self.save_pickup_pose_from_esp)
         self.calibration_page.save_step_requested.connect(self.save_calibration_step)
@@ -470,27 +478,35 @@ class MainWindow(QMainWindow):
 
     def test_webcam(self) -> None:
         self.webcam_tested = True
-        index = int(self.settings.get("cameraIndex", 0))
-        self.connection_page.camera_status.set_state("Camera testing", "yellow")
-        self.log(f"Testing webcam {index} in the background.")
+        self.connection_page.camera_status.set_state("D415 testing", "yellow")
+        self.log("Testing RealSense D415 in the background.")
 
         def task() -> dict[str, Any]:
-            import cv2
+            import pyrealsense2 as rs
 
-            cap = cv2.VideoCapture(index)
+            pipeline = rs.pipeline()
+            config = rs.config()
+            config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+            config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+            started = False
             try:
-                ok = cap.isOpened()
-                frame_size = None
-                if ok:
-                    frame_ok, frame = cap.read()
-                    ok = bool(frame_ok)
-                    if frame_ok:
-                        frame_size = (frame.shape[1], frame.shape[0])
-                return {"ok": ok, "frameSize": frame_size}
+                profile = pipeline.start(config)
+                started = True
+                device = profile.get_device()
+                frames = pipeline.wait_for_frames(1500)
+                depth = frames.get_depth_frame()
+                color = frames.get_color_frame()
+                return {
+                    "ok": bool(depth and color),
+                    "frameSize": (color.get_width(), color.get_height()) if color else None,
+                    "name": str(device.get_info(rs.camera_info.name)),
+                    "serial": str(device.get_info(rs.camera_info.serial_number)),
+                }
             finally:
-                cap.release()
+                if started:
+                    pipeline.stop()
 
-        self._run_background(task, lambda result: self._on_webcam_test_result(index, result), "Webcam test failed", self._on_webcam_offline)
+        self._run_background(task, self._on_webcam_test_result, "D415 test failed", self._on_webcam_offline)
 
     def test_side_camera(self) -> None:
         self.save_setup_settings()
@@ -555,10 +571,15 @@ class MainWindow(QMainWindow):
         self.webcam_connected = False
         self.update_ui_state()
 
-    def _on_webcam_test_result(self, index: int, result: dict[str, Any]) -> None:
+    def _on_webcam_test_result(self, result: dict[str, Any]) -> None:
         self.webcam_connected = bool(result.get("ok"))
         self.last_frame_size = result.get("frameSize")
-        self.log(f"Webcam {index} {'connected' if self.webcam_connected else 'failed to open'}.")
+        if self.webcam_connected:
+            self.log(f"RealSense D415 connected: {result.get('name', 'device')} {result.get('serial', '')}.")
+            self.connection_page.camera_status.set_state("D415 connected", "green")
+        else:
+            self.log("RealSense D415 failed to open.")
+            self.connection_page.camera_status.set_state("D415 disconnected", "red")
         self.update_ui_state()
 
     def auto_detect_pi(self) -> None:
@@ -642,25 +663,28 @@ class MainWindow(QMainWindow):
             self.calibration.update(calibration)
 
     def start_camera(self) -> None:
-        if self.camera_worker and self.camera_worker.isRunning():
+        if self.realsense_worker and self.realsense_worker.isRunning():
             return
-        from .camera_worker import CameraWorker
+        from .realsense_worker import RealSenseWorker
 
         profile = self.camera_page.profile()
-        self.camera_worker = CameraWorker(int(self.settings.get("cameraIndex", 0)))
-        self.camera_worker.configure(profile=profile, homography=self.calibration.get("homography") if has_homography(self.calibration) else None)
-        self.camera_worker.frame_ready.connect(self.on_camera_frame)
-        self.camera_worker.detection_ready.connect(self.on_detection)
-        self.camera_worker.camera_status.connect(self.on_camera_status)
-        self.camera_worker.start()
-        self.log("Camera starting.")
+        self.realsense_worker = RealSenseWorker()
+        self.realsense_worker.configure(profile=profile, homography=self.calibration.get("homography") if has_homography(self.calibration) else None)
+        self.realsense_worker.frame_ready.connect(self.on_realsense_frame)
+        self.realsense_worker.detection_ready.connect(self.on_detection)
+        self.realsense_worker.camera_status.connect(self.on_camera_status)
+        self.realsense_worker.start()
+        self.log("RealSense D415 starting.")
 
     def stop_camera(self) -> None:
+        if self.realsense_worker:
+            self.realsense_worker.stop()
+            self.realsense_worker = None
         if self.camera_worker:
             self.camera_worker.stop()
             self.camera_worker = None
         self.webcam_connected = False
-        self.log("Camera stopped.")
+        self.log("D415 camera stopped.")
         self.update_ui_state()
 
     def start_side_camera(self, stream_url: str) -> None:
@@ -712,22 +736,18 @@ class MainWindow(QMainWindow):
     def start_auto_calibration(self) -> None:
         self.log("Auto calibration wizard started. GUI will not send robot motion.")
         self.calibration_page.set_step(1)
-        if not self.camera_worker or not self.camera_worker.isRunning():
+        if not self.realsense_worker or not self.realsense_worker.isRunning():
             self.start_camera()
-        if not self.side_camera_worker or not self.side_camera_worker.isRunning():
-            self.start_side_camera(str(self.settings.get("sideCameraUrl", DEFAULT_SIDE_CAMERA_URL)))
         self.calibration_page.update_wizard_status(
             {
-                "top_camera": self.webcam_connected or self.camera_worker is not None,
-                "side_camera": self.side_camera_worker is not None,
+                "top_camera": self.webcam_connected or self.realsense_worker is not None,
+                "depth": self.last_depth_frame is not None,
                 "website": bool(self.settings.get("websiteUrl")),
                 "esp": self.last_esp_status is not None or self.esp_connected,
             }
         )
         if self.last_camera_frame is not None:
             self.scan_aruco_markers()
-        if self.last_side_frame is not None:
-            self.detect_side_board()
 
     def sample_claw_marker_color(self, x: int, y: int) -> None:
         if self.last_side_frame is None:
@@ -750,7 +770,9 @@ class MainWindow(QMainWindow):
         self.webcam_tested = True
         self.webcam_connected = online
         self.log(message)
-        self.calibration_page.update_wizard_status({"top_camera": online, "side_camera": self.side_camera_connected, "website": bool(self.settings.get("websiteUrl")), "esp": self.esp_connected})
+        self.calibration_page.set_realsense_status(message)
+        self.connection_page.camera_status.set_state("D415 connected" if online else "D415 disconnected", "green" if online else "red")
+        self.calibration_page.update_wizard_status({"top_camera": online, "depth": self.last_depth_frame is not None, "website": bool(self.settings.get("websiteUrl")), "esp": self.esp_connected})
         self.update_ui_state()
 
     def on_camera_frame(self, frame: Any) -> None:
@@ -761,6 +783,22 @@ class MainWindow(QMainWindow):
         pixmap = QPixmap.fromImage(image)
         for view in (self.camera_page.camera_view, self.calibration_page.camera_view, self.autonomous_page.camera_view):
             view.set_frame(pixmap, (w, h))
+
+    def on_realsense_frame(self, payload: dict[str, Any]) -> None:
+        color = payload["color"]
+        depth_colormap = payload["depthColormap"]
+        depth = payload["depth"]
+        self.last_depth_frame = depth.copy()
+        self.last_depth_scale = float(payload.get("depthScale", 0.001))
+        self.last_realsense_intrinsics = payload.get("intrinsics")
+        self.last_realsense_metadata = payload.get("metadata")
+        self.calibration_page.set_realsense_metadata(self.last_realsense_metadata, self.last_realsense_intrinsics, self.last_depth_scale)
+        self.on_camera_frame(color)
+        h, w = depth_colormap.shape[:2]
+        depth_image = QImage(depth_colormap.data, w, h, depth_colormap.strides[0], QImage.Format_BGR888).copy()
+        depth_pixmap = QPixmap.fromImage(depth_image)
+        self.calibration_page.depth_view.set_frame(depth_pixmap, (w, h))
+        self.calibration_page.plane_view.set_frame(depth_pixmap, (w, h))
 
     def on_detection(self, payload: dict[str, Any]) -> None:
         detection = payload["detection"]
@@ -853,6 +891,8 @@ class MainWindow(QMainWindow):
         self.settings["hsv"] = profile.to_settings()
         if self.camera_worker:
             self.camera_worker.configure(profile=profile)
+        if self.realsense_worker:
+            self.realsense_worker.configure(profile=profile)
 
     def save_hsv_profile(self) -> None:
         self.settings["hsv"] = self.camera_page.profile().to_settings()
@@ -922,7 +962,7 @@ class MainWindow(QMainWindow):
 
     def update_calibration_marker_overlay(self) -> None:
         mapping_step = self.calibration_page.step_index == 2
-        if self.calibration_page.step_index != 6:
+        if self.calibration_page.step_index != 6 and self.calibration_page.depth_pending_tip is None:
             self.calibration_page.camera_view.set_marker(None, None)
         self.calibration_page.camera_view.set_calibration_overlay(
             markers=self.calibration_page.mapping_overlay() if mapping_step else {},
@@ -985,6 +1025,97 @@ class MainWindow(QMainWindow):
 
         self._run_background(task, on_result, "Side-board scan failed")
 
+    def learn_realsense_table_plane(self) -> None:
+        if self.last_depth_frame is None or self.last_realsense_intrinsics is None or self.last_depth_scale is None:
+            self.log("D415 table plane blocked: depth frame is missing.")
+            return
+        markers = list(self.calibration_page.mapping_overlay().values())
+        if len(markers) < 4:
+            self.log("D415 table plane blocked: scan all four top ArUco markers first.")
+            return
+        depth = self.last_depth_frame.copy()
+        intrinsics = dict(self.last_realsense_intrinsics)
+        depth_scale = float(self.last_depth_scale)
+        self.calibration_page.depth_table_status.setText("Table plane learning from D415 depth...")
+
+        def task() -> dict[str, Any]:
+            return fit_table_plane_from_depth(depth_image=depth, intrinsics=intrinsics, marker_points=markers, depth_scale=depth_scale)
+
+        def on_result(result: dict[str, Any]) -> None:
+            self.calibration_page.apply_realsense_table_plane(result)
+            self.calibration["depthCamera"] = {
+                "metadata": self.last_realsense_metadata or {},
+                "intrinsics": self.last_realsense_intrinsics or {},
+                "depthScale": self.last_depth_scale,
+                "tablePlane": result,
+            }
+            self.log(f"D415 table plane learned. RMS {float(result.get('rmsErrorMm', 0.0)):.1f} mm.")
+            self.update_ui_state()
+
+        self._run_background(task, on_result, "D415 table plane learning failed")
+
+    def save_realsense_anchor_sample(self) -> None:
+        if self.calibration_page.depth_pending_tip is None:
+            self.log("D415 sample blocked: click the visible claw tip in the color view first.")
+            return
+        if self.calibration_page.realsense_table_plane is None:
+            self.log("D415 sample blocked: learn the table plane first.")
+            return
+        if self.last_depth_frame is None or self.last_realsense_intrinsics is None or self.last_depth_scale is None:
+            self.log("D415 sample blocked: depth frame is missing.")
+            return
+        x, y = self.calibration_page.depth_pending_tip
+        depth_mm = sample_depth_mm(self.last_depth_frame, x, y, radius=4, depth_scale=float(self.last_depth_scale))
+        if depth_mm is None:
+            self.log("D415 sample blocked: no valid depth at the clicked claw tip.")
+            return
+        try:
+            point = deproject_pixel_to_point_mm(x, y, depth_mm, self.last_realsense_intrinsics)
+            height_mm = height_above_table_mm(point, self.calibration_page.realsense_table_plane)
+        except Exception as error:
+            self.log(f"D415 sample blocked: {error}")
+            return
+
+        esp_url = self.settings["espUrl"]
+        website_url = self.settings.get("websiteUrl", self.settings["piUrl"])
+        fake = bool(self.settings.get("fakeEsp"))
+        sample_info = {
+            "depthMm": depth_mm,
+            "cameraPointMm": {"x": point[0], "y": point[1], "z": point[2]},
+            "heightAboveTableMm": height_mm,
+        }
+
+        def task() -> dict[str, Any]:
+            status: dict[str, Any] = {}
+            try:
+                status = EspClient(esp_url, fake=fake).status()
+            except Exception:
+                status = {}
+            try:
+                manual_response = WebsiteClient(website_url, mock=bool(self.settings.get("mockPi"))).get_manual_control_state()
+                manual_state = manual_response.get("state") if manual_response.get("hasState") else None
+            except Exception:
+                manual_state = None
+            return self._calibration_capture_pose(status, manual_state)
+
+        def on_result(status: dict[str, Any]) -> None:
+            if status.get("espStatus"):
+                self.last_esp_status = status["espStatus"]
+                self.esp_connected = True
+            try:
+                self.calibration_page.add_realsense_sample(status, sample_info)
+            except Exception as error:
+                self.log(f"D415 sample not saved: {error}")
+                return
+            self.calibration["tableZ"] = self.calibration_page.table_z()
+            self.log(
+                f"Saved D415 depth anchor: robotZ {float(status.get('z', 0.0)):.1f}, "
+                f"height {height_mm:.1f} mm from {status.get('source', 'unknown source')}."
+            )
+            self.update_ui_state()
+
+        self._run_background(task, on_result, "D415 depth anchor not saved")
+
     def _scan_calibration_markers(self, marker_type: str, detector: Any) -> None:
         if self.last_camera_frame is None:
             self.log(f"{marker_type} scan blocked: start the camera first.")
@@ -1016,7 +1147,7 @@ class MainWindow(QMainWindow):
                 self.calibration["reprojectionError"] = reprojection_error
                 self.calibration_page.set_mapping_quality(f"Top XY mapping ready. Error {reprojection_error:.2f} mm.")
                 self.log(f"Top XY mapping ready. Reprojection error: {reprojection_error:.2f} mm.")
-                self.calibration_page.update_wizard_status({"top_camera": self.webcam_connected, "side_camera": self.side_camera_connected, "website": bool(self.settings.get("websiteUrl")), "esp": self.esp_connected})
+                self.calibration_page.update_wizard_status({"top_camera": self.webcam_connected, "depth": self.last_depth_frame is not None, "website": bool(self.settings.get("websiteUrl")), "esp": self.esp_connected})
 
         def on_error(message: str) -> None:
             if marker_type == "ArUco":
@@ -1242,6 +1373,17 @@ class MainWindow(QMainWindow):
             calibration["hoverClearanceMm"] = 60.0
             calibration["approachClearanceMm"] = 15.0
             calibration["liftClearanceMm"] = 90.0
+        calibration["camera"] = {
+            "type": "realsense_d415",
+            "width": self.last_frame_size[0],
+            "height": self.last_frame_size[1],
+        }
+        calibration["depthCamera"] = {
+            "metadata": self.last_realsense_metadata or {},
+            "intrinsics": self.last_realsense_intrinsics or {},
+            "depthScale": self.last_depth_scale,
+            "tablePlane": self.calibration_page.realsense_table_plane,
+        }
         calibration["sideCamera"] = {"url": str(self.settings.get("sideCameraUrl", DEFAULT_SIDE_CAMERA_URL))}
         calibration["sideBoard"] = self.calibration_page.side_board_detection
         calibration["clawMarker"] = {
@@ -1252,10 +1394,11 @@ class MainWindow(QMainWindow):
         calibration["calibrationStatus"] = {
             "topXYReady": has_homography(calibration),
             "sideZReady": table_z_calibrated(calibration),
+            "depthZReady": table_z_calibrated(calibration),
             "pickupReady": pickup_pose_calibrated(calibration),
         }
         if not calibration_complete(calibration):
-            self.log("Calibration incomplete: top XY mapping, workspace, and side Z are required.")
+            self.log("Calibration incomplete: top XY mapping, workspace, and D415 table height are required.")
             return
         self.calibration = calibration
         save_local_calibration(self.calibration)
@@ -1277,12 +1420,14 @@ class MainWindow(QMainWindow):
             return client.put_config(config_patch)
 
         def on_saved(_result: dict[str, Any]) -> None:
-            self.calibration_page.update_wizard_status({"saved": True, "top_camera": True, "side_camera": self.side_camera_connected, "website": True, "esp": self.esp_connected})
+            self.calibration_page.update_wizard_status({"saved": True, "top_camera": True, "depth": True, "website": True, "esp": self.esp_connected})
             self.log("Calibration saved locally and uploaded to Pi.")
 
         self._run_background(task, on_saved, "Calibration saved locally but Pi upload failed")
         if self.camera_worker:
             self.camera_worker.configure(homography=self.calibration.get("homography"))
+        if self.realsense_worker:
+            self.realsense_worker.configure(homography=self.calibration.get("homography"))
         self.update_ui_state()
 
     def generate_preview(self, hover_only: bool = False) -> None:
@@ -1447,7 +1592,7 @@ class MainWindow(QMainWindow):
             self.health_pills["estop"].set_state("ESTOP unknown", "yellow")
         else:
             self.health_pills["estop"].set_state("ESTOP active" if estop_active else "ESTOP inactive", "red" if estop_active else "green")
-        self.health_pills["camera"].set_state("Webcam online" if state.webcam_connected else "Webcam offline", "green" if state.webcam_connected else "red")
+        self.health_pills["camera"].set_state("D415 online" if state.webcam_connected else "D415 offline", "green" if state.webcam_connected else "red")
         self.health_pills["calibration"].set_state("Calibrated" if calibrated else "Not calibrated", "green" if calibrated else "red")
         self.health_pills["motion"].set_state("Motion enabled" if state.motion_enabled else "Motion disabled", "green" if state.motion_enabled else "yellow")
         self.health_pills["target"].set_state(f"Target {self.last_target_status}", "green" if state.target_valid else "yellow")
@@ -1461,8 +1606,8 @@ class MainWindow(QMainWindow):
             self.health_pills["esp"].set_state("ESP not tested", "yellow")
             self.health_pills["estop"].set_state("ESTOP not tested", "yellow")
         if not self.webcam_tested and not self.webcam_connected:
-            self.connection_page.camera_status.set_state("Camera not tested", "yellow")
-            self.health_pills["camera"].set_state("Webcam not tested", "yellow")
+            self.connection_page.camera_status.set_state("D415 not tested", "yellow")
+            self.health_pills["camera"].set_state("D415 not tested", "yellow")
 
     def _show_plan(self, plan: dict[str, Any]) -> None:
         self.autonomous_page.update_plan(plan)

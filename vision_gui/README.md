@@ -2,11 +2,11 @@
 
 Desktop setup software for the robot arm vision, calibration, and pickup workflow.
 
-The app is designed for the main PC with the webcam attached. It connects to:
+The app is designed for the main PC with the Intel RealSense D415 attached overhead. It connects to:
 
 - Raspberry Pi vision server
 - ESP8266 robot controller
-- Local webcam
+- Local RealSense D415 depth camera
 
 Detection alone never moves the robot. Real motion stays locked until calibration, ghost preview, and hover-only movement checks pass.
 
@@ -32,17 +32,16 @@ python app.py
 1. Open the Setup page.
 2. Enter the Raspberry Pi URL, for example `http://192.168.1.50:8000`.
 3. Enter the ESP URL, for example `http://192.168.1.60`.
-4. Select the webcam index, usually `0`.
-5. Use Test Pi Connection, Test ESP Connection, and Test Webcam.
-6. Enter the DroidCam side camera URL shown on Setup, for example `http://192.168.1.149:4747/video`.
-7. Use Test Side Camera to confirm the stream opens in the DesktopGUI.
+4. Plug the D415 into USB 3 and use Test RealSense D415.
+5. Use Test Pi Connection and Test ESP Connection.
+6. DroidCam side camera setup is now only an advanced fallback.
 8. Save Settings.
 
 Use Mock Pi and Fake ESP modes to test the workflow without hardware.
 
-The app starts in a startup-safe mode: it does not automatically probe the Pi, ESP, webcam, config, or calibration during window creation. Status begins as Not tested, and hardware checks only run after you press a test button.
+The app starts in a startup-safe mode: it does not automatically probe the Pi, ESP, D415, config, or calibration during window creation. Status begins as Not tested, and hardware checks only run after you press a test button.
 
-The DesktopGUI uses the direct DroidCam MJPEG stream for side-view preview. Use the DroidCam URL shown on Setup, for example `http://192.168.1.149:4747/video`.
+The DesktopGUI uses the D415 color stream for object detection and top-down marker mapping, and aligned D415 depth for table-height calibration. The direct DroidCam MJPEG stream remains available only as a side-view fallback.
 
 ## Beginner Setup Checklist
 
@@ -50,7 +49,7 @@ The checklist controls which actions are available:
 
 - Pi server connected
 - ESP connected
-- Webcam connected
+- D415 connected
 - Object detection working
 - Camera calibration complete
 - Workspace bounds saved
@@ -65,13 +64,13 @@ Full pickup stays locked until hover-only real movement has passed and you confi
 
 ## Calibration Walkthrough
 
-1. Start the camera.
+1. Start the D415 camera.
 2. Open Calibration.
 3. Camera Placement: confirm the full reachable table is visible.
 4. Define Robot Origin: click the robot base center projected onto the table.
 5. Four-Point Table Mapping: generate and print the ArUco marker sheet, place IDs 0-3 at FL/FR/BL/BR, then scan markers from the camera to auto-fill pixel centers and robot X/Y coordinates. If ArUco is unavailable, use the QR fallback sheet. Manual click placement is still available behind the manual fallback checkbox.
 6. Workspace Bounds: save the safety limits.
-7. Side-View Table Z Calibration: open the monitor board full-screen on the MacBook, start DroidCam on the iPhone, then set the table line and save safe claw-height samples. The GUI never lowers the arm automatically.
+7. D415 Table Height Calibration: learn the table plane from overhead depth, then use the website controls to move the claw to high, medium, and low safe heights. Click the claw tip in the D415 color view and capture each sample. The GUI never lowers the arm automatically.
 8. Pickup Pose: manually move to a safe pickup pose and save the current ESP pose.
 9. Validation: click a point and generate a hover preview.
 10. Finish Calibration to save `config/vision_calibration.json` and upload it to the Pi.
@@ -113,5 +112,6 @@ Full pickup stays locked until hover-only real movement has passed and you confi
 
 - Auto-detect only tries common local Pi addresses; manual URL entry is still the reliable setup path.
 - The GUI expects the current ESP status fields already exposed by `/status`.
+- RealSense support requires `pyrealsense2` and the D415 to be visible to the OS over USB 3.
 - The app stores GUI preferences in `vision_gui/user_settings.json`, which is local to this machine.
 - ArUco marker generation and detection require `opencv-contrib-python`. Plain `opencv-python` does not always include `cv2.aruco`.

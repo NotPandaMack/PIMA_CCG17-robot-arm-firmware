@@ -15,6 +15,12 @@ from vision_gui.robot_arm_gui.calibration_manager import (
     estimate_table_z,
 )
 from vision_gui.robot_arm_gui.calibration_markers import detect_side_board_markers
+from vision_gui.robot_arm_gui.realsense_depth import (
+    deproject_pixel_to_point_mm,
+    fit_realsense_table_z,
+    fit_table_plane_from_depth,
+    height_above_table_mm,
+)
 
 
 HAS_OPENCV = importlib.util.find_spec("cv2") is not None and importlib.util.find_spec("numpy") is not None
@@ -92,6 +98,36 @@ class GuiCalibrationTests(unittest.TestCase):
         self.assertEqual("side_view_visual_fit", table_z["method"])
         self.assertAlmostEqual(120.0, table_z["z"])
         self.assertAlmostEqual(2.0, table_z["fit"]["pixelsPerRobotMm"])
+        calibration = empty_calibration()
+        calibration["tableZ"] = table_z
+        self.assertTrue(table_z_calibrated(calibration))
+        self.assertEqual(120.0, estimate_table_z(calibration, 10.0, 20.0))
+
+    @unittest.skipUnless(HAS_OPENCV, "OpenCV and NumPy are not installed")
+    def test_realsense_depth_plane_anchor_fit_calibrates_table_z(self):
+        import numpy as np
+
+        depth = np.full((80, 100), 1000, dtype=np.uint16)
+        intrinsics = {"fx": 100.0, "fy": 100.0, "ppx": 50.0, "ppy": 40.0}
+        markers = [
+            {"pixel": {"x": 10, "y": 10}},
+            {"pixel": {"x": 90, "y": 10}},
+            {"pixel": {"x": 90, "y": 70}},
+            {"pixel": {"x": 10, "y": 70}},
+        ]
+        plane = fit_table_plane_from_depth(depth_image=depth, intrinsics=intrinsics, marker_points=markers, depth_scale=0.001, stride=4)
+        claw_point = deproject_pixel_to_point_mm(50, 40, 940.0, intrinsics)
+        self.assertAlmostEqual(60.0, height_above_table_mm(claw_point, plane), delta=1.0)
+        table_z = fit_realsense_table_z(
+            table_plane=plane,
+            samples=[
+                {"robotZ": 60.0, "heightAboveTableMm": 60.0},
+                {"robotZ": 80.0, "heightAboveTableMm": 40.0},
+                {"robotZ": 100.0, "heightAboveTableMm": 20.0},
+            ],
+        )
+        self.assertEqual("realsense_depth_plane_anchor_fit", table_z["method"])
+        self.assertAlmostEqual(120.0, table_z["z"])
         calibration = empty_calibration()
         calibration["tableZ"] = table_z
         self.assertTrue(table_z_calibrated(calibration))
