@@ -35,7 +35,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "cameraIndex": 0,
     "sideCameraUrl": "",
     "sideCameraStreamKey": "side",
-    "sideCameraRtmpsPort": 1936,
+    "sideCameraRtmpPort": 1936,
     "sideCameraMjpegPort": 8090,
     "motionEnabled": False,
     "continuousSend": False,
@@ -71,7 +71,7 @@ def load_settings(path: Path = SETTINGS_PATH) -> dict[str, Any]:
     settings["cameraIndex"] = int(settings.get("cameraIndex", 0))
     settings["sideCameraUrl"] = str(settings.get("sideCameraUrl", "")).strip()
     settings["sideCameraStreamKey"] = str(settings.get("sideCameraStreamKey", "side")).strip() or "side"
-    settings["sideCameraRtmpsPort"] = int(settings.get("sideCameraRtmpsPort", 1936))
+    settings["sideCameraRtmpPort"] = int(settings.get("sideCameraRtmpPort", settings.get("sideCameraRtmpsPort", 1936)))
     settings["sideCameraMjpegPort"] = int(settings.get("sideCameraMjpegPort", 8090))
     return settings
 

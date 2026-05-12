@@ -62,7 +62,7 @@ from .widgets.test_page import TestPage
 logger = logging.getLogger(__name__)
 
 
-def _split_rtmps_ingest_url(ingest_url: str) -> tuple[str, str]:
+def _split_rtmp_ingest_url(ingest_url: str) -> tuple[str, str]:
     server_url, _slash, stream_key = ingest_url.rstrip("/").rpartition("/")
     if not server_url or not stream_key:
         return ingest_url, "side"
@@ -101,7 +101,7 @@ class MainWindow(QMainWindow):
         self.last_send_at = 0.0
         self.camera_worker: Any | None = None
         self.side_camera_worker: Any | None = None
-        self.rtmps_relay: Any | None = None
+        self.rtmp_relay: Any | None = None
         self.side_capture_url = ""
 
         self._build_ui()
@@ -109,7 +109,7 @@ class MainWindow(QMainWindow):
         self._apply_settings_to_ui()
         self._apply_style()
         self._start_nonblocking_timers()
-        self.start_rtmps_side_relay()
+        self.start_rtmp_side_relay()
         self.go_to("setup")
         self.update_ui_state()
         QTimer.singleShot(0, self._load_startup_files_async)
@@ -121,7 +121,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: Any) -> None:
         self.stop_camera()
         self.stop_side_camera()
-        self.stop_rtmps_side_relay()
+        self.stop_rtmp_side_relay()
         self.settings["lastPage"] = self.current_page_name()
         save_settings(self.settings)
         super().closeEvent(event)
@@ -472,12 +472,12 @@ class MainWindow(QMainWindow):
         if not stream_url:
             self.side_camera_connected = False
             self.connection_page.update_side_camera_status(False, "Side camera URL missing")
-            self.log("Side camera test blocked: Camo RTMPS server URL is missing.")
+            self.log("Side camera test blocked: Camo RTMP server URL is missing.")
             self.update_ui_state()
             return
-        ready = bool(self.rtmps_relay and self.rtmps_relay.isRunning())
+        ready = bool(self.rtmp_relay and self.rtmp_relay.isRunning())
         self.side_camera_connected = ready
-        message = "RTMPS relay ready; use the server URL and stream key in Camo Studio" if ready else "RTMPS relay is not running"
+        message = "RTMP relay ready; use the server URL and stream key in Camo Studio" if ready else "RTMP relay is not running"
         self.connection_page.update_side_camera_status(ready, message)
         self.log(message)
         self.update_ui_state()
@@ -611,17 +611,17 @@ class MainWindow(QMainWindow):
         self.update_ui_state()
 
     def start_side_camera(self, stream_url: str) -> None:
-        if stream_url.startswith("rtmps://"):
+        if stream_url.startswith("rtmp://"):
             self.settings["sideCameraUrl"] = stream_url
             save_settings(self.settings)
             self.connection_page.side_camera_url.setText(stream_url)
             self.calibration_page.set_side_camera_url(stream_url)
             stream_url = self.side_capture_url
             if not stream_url:
-                self.log("Side camera blocked: RTMPS relay capture URL is not ready.")
+                self.log("Side camera blocked: RTMP relay capture URL is not ready.")
                 return
-            self.calibration_page.set_side_camera_status("Waiting for Camo Studio to stream to the RTMPS URL.")
-            self.connection_page.update_side_camera_status(True, "RTMPS relay ready")
+            self.calibration_page.set_side_camera_status("Waiting for Camo Studio to stream to the RTMP URL.")
+            self.connection_page.update_side_camera_status(True, "RTMP relay ready")
         if self.side_camera_worker and self.side_camera_worker.isRunning():
             self.log("Side camera already running.")
             return
@@ -663,35 +663,35 @@ class MainWindow(QMainWindow):
         image = QImage(frame.data, w, h, frame.strides[0], QImage.Format_BGR888).copy()
         self.calibration_page.side_camera_view.set_frame(QPixmap.fromImage(image), (w, h))
 
-    def start_rtmps_side_relay(self) -> None:
-        if self.rtmps_relay and self.rtmps_relay.isRunning():
+    def start_rtmp_side_relay(self) -> None:
+        if self.rtmp_relay and self.rtmp_relay.isRunning():
             return
-        from .rtmps_side_receiver import RtmpsSideCameraRelay
+        from .rtmp_side_receiver import RtmpSideCameraRelay
 
-        rtmps_port = int(self.settings.get("sideCameraRtmpsPort", 1936))
+        rtmp_port = int(self.settings.get("sideCameraRtmpPort", 1936))
         mjpeg_port = int(self.settings.get("sideCameraMjpegPort", 8090))
         stream_key = str(self.settings.get("sideCameraStreamKey", "side")).strip() or "side"
-        self.rtmps_relay = RtmpsSideCameraRelay(rtmps_port=rtmps_port, mjpeg_port=mjpeg_port, stream_key=stream_key)
-        self.rtmps_relay.ingest_url_ready.connect(self.on_rtmps_ingest_url_ready)
-        self.rtmps_relay.capture_url_ready.connect(self.on_rtmps_capture_url_ready)
-        self.rtmps_relay.relay_status.connect(self.on_side_camera_status)
-        self.rtmps_relay.start()
+        self.rtmp_relay = RtmpSideCameraRelay(rtmp_port=rtmp_port, mjpeg_port=mjpeg_port, stream_key=stream_key)
+        self.rtmp_relay.ingest_url_ready.connect(self.on_rtmp_ingest_url_ready)
+        self.rtmp_relay.capture_url_ready.connect(self.on_rtmp_capture_url_ready)
+        self.rtmp_relay.relay_status.connect(self.on_side_camera_status)
+        self.rtmp_relay.start()
 
-    def stop_rtmps_side_relay(self) -> None:
-        if self.rtmps_relay:
-            self.rtmps_relay.stop()
-            self.rtmps_relay = None
+    def stop_rtmp_side_relay(self) -> None:
+        if self.rtmp_relay:
+            self.rtmp_relay.stop()
+            self.rtmp_relay = None
 
-    def on_rtmps_ingest_url_ready(self, ingest_url: str) -> None:
-        server_url, stream_key = _split_rtmps_ingest_url(ingest_url)
+    def on_rtmp_ingest_url_ready(self, ingest_url: str) -> None:
+        server_url, stream_key = _split_rtmp_ingest_url(ingest_url)
         self.settings["sideCameraUrl"] = server_url
         self.settings["sideCameraStreamKey"] = stream_key
         save_settings(self.settings)
-        self.connection_page.set_side_camera_rtmps_details(server_url, stream_key)
+        self.connection_page.set_side_camera_rtmp_details(server_url, stream_key)
         self.calibration_page.set_side_camera_url(ingest_url)
-        self.log(f"Camo RTMPS server ready: {server_url} stream key: {stream_key}")
+        self.log(f"Camo RTMP server ready: {server_url} stream key: {stream_key}")
 
-    def on_rtmps_capture_url_ready(self, capture_url: str) -> None:
+    def on_rtmp_capture_url_ready(self, capture_url: str) -> None:
         self.side_capture_url = capture_url
 
     def on_camera_status(self, online: bool, message: str) -> None:

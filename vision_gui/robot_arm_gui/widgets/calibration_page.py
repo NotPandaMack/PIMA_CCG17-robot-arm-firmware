@@ -553,7 +553,7 @@ class CalibrationPage(QWidget):
         stream_box.setObjectName("subPanel")
         stream_layout = QVBoxLayout(stream_box)
         self.side_stream_url = QLineEdit()
-        self.side_stream_url.setPlaceholderText("Camo RTMPS ingest URL")
+        self.side_stream_url.setPlaceholderText("Camo RTMP ingest URL")
         self.side_stream_url.setReadOnly(True)
         button_row = QHBoxLayout()
         start_button = QPushButton("Use Camo Side Camera")

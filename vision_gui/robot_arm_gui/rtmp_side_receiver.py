@@ -3,15 +3,12 @@ from __future__ import annotations
 import socket
 import subprocess
 import time
-from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QThread, Signal
 
-from .config import GUI_ROOT
 
-
-class RtmpsSideCameraRelay(QThread):
+class RtmpSideCameraRelay(QThread):
     relay_status = Signal(bool, str)
     ingest_url_ready = Signal(str)
     capture_url_ready = Signal(str)
@@ -20,7 +17,7 @@ class RtmpsSideCameraRelay(QThread):
         self,
         *,
         host: str = "0.0.0.0",
-        rtmps_port: int = 1936,
+        rtmp_port: int = 1936,
         mjpeg_port: int = 8090,
         app_name: str = "live",
         stream_key: str = "side",
@@ -28,7 +25,7 @@ class RtmpsSideCameraRelay(QThread):
     ) -> None:
         super().__init__(parent)
         self.host = host
-        self.rtmps_port = int(rtmps_port)
+        self.rtmp_port = int(rtmp_port)
         self.mjpeg_port = int(mjpeg_port)
         self.app_name = app_name.strip("/") or "live"
         self.stream_key = stream_key.strip("/") or "side"
@@ -37,11 +34,11 @@ class RtmpsSideCameraRelay(QThread):
 
     @property
     def ingest_url(self) -> str:
-        return f"rtmps://{_local_lan_ip()}:{self.rtmps_port}/{self.app_name}/{self.stream_key}"
+        return f"rtmp://{_local_lan_ip()}:{self.rtmp_port}/{self.app_name}/{self.stream_key}"
 
     @property
     def server_url(self) -> str:
-        return f"rtmps://{_local_lan_ip()}:{self.rtmps_port}/{self.app_name}"
+        return f"rtmp://{_local_lan_ip()}:{self.rtmp_port}/{self.app_name}"
 
     @property
     def capture_url(self) -> str:
@@ -59,12 +56,6 @@ class RtmpsSideCameraRelay(QThread):
 
     def run(self) -> None:
         self._running = True
-        try:
-            cert_file, key_file = _ensure_self_signed_cert()
-        except Exception as error:
-            self.relay_status.emit(False, f"RTMPS certificate setup failed: {error}")
-            return
-
         self.ingest_url_ready.emit(self.ingest_url)
         self.capture_url_ready.emit(self.capture_url)
         command = [
@@ -74,12 +65,8 @@ class RtmpsSideCameraRelay(QThread):
             "warning",
             "-listen",
             "1",
-            "-cert_file",
-            str(cert_file),
-            "-key_file",
-            str(key_file),
             "-i",
-            f"rtmps://{self.host}:{self.rtmps_port}/{self.app_name}/{self.stream_key}",
+            f"rtmp://{self.host}:{self.rtmp_port}/{self.app_name}/{self.stream_key}",
             "-an",
             "-vf",
             "fps=15",
@@ -94,17 +81,21 @@ class RtmpsSideCameraRelay(QThread):
         try:
             self._process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         except FileNotFoundError:
-            self.relay_status.emit(False, "FFmpeg is required for Camo RTMPS ingest")
+            self.relay_status.emit(False, "FFmpeg is required for Camo RTMP ingest")
             return
         except Exception as error:
-            self.relay_status.emit(False, f"RTMPS relay failed to start: {error}")
+            self.relay_status.emit(False, f"RTMP relay failed to start: {error}")
             return
 
-        self.relay_status.emit(True, f"Camo RTMPS relay listening at {self.ingest_url}")
+        self.relay_status.emit(True, f"Camo RTMP relay listening at {self.ingest_url}")
+        recent_errors: list[str] = []
         while self._running and self._process.poll() is None:
             line = self._process.stderr.readline() if self._process.stderr else ""
             if line:
                 text = line.strip()
+                if text:
+                    recent_errors.append(text)
+                    recent_errors = recent_errors[-4:]
                 if "Address already in use" in text:
                     self.relay_status.emit(False, text)
                 elif "Connection" in text or "Stream" in text or "Opening" in text:
@@ -113,38 +104,8 @@ class RtmpsSideCameraRelay(QThread):
                 time.sleep(0.1)
         if self._running:
             code = self._process.poll()
-            self.relay_status.emit(False, f"RTMPS relay stopped with code {code}")
-
-
-def _ensure_self_signed_cert() -> tuple[Path, Path]:
-    cert_dir = GUI_ROOT / "runtime"
-    cert_dir.mkdir(parents=True, exist_ok=True)
-    cert_file = cert_dir / "camo_rtmps_cert.pem"
-    key_file = cert_dir / "camo_rtmps_key.pem"
-    if cert_file.exists() and key_file.exists():
-        return cert_file, key_file
-    subprocess.run(
-        [
-            "openssl",
-            "req",
-            "-x509",
-            "-newkey",
-            "rsa:2048",
-            "-nodes",
-            "-keyout",
-            str(key_file),
-            "-out",
-            str(cert_file),
-            "-days",
-            "3650",
-            "-subj",
-            f"/CN={_local_lan_ip()}",
-        ],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    return cert_file, key_file
+            detail = " | ".join(recent_errors) if recent_errors else "no FFmpeg error output"
+            self.relay_status.emit(False, f"RTMP relay stopped with code {code}: {detail}")
 
 
 def _local_lan_ip() -> str:

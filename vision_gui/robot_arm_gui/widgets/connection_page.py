@@ -60,7 +60,7 @@ class ConnectionPage(QWidget):
         self.camera_index = QSpinBox()
         self.camera_index.setRange(0, 12)
         self.side_camera_url = QLineEdit()
-        self.side_camera_url.setPlaceholderText("rtmps://desktop-ip:1936/live")
+        self.side_camera_url.setPlaceholderText("rtmp://desktop-ip:1936/live")
         self.side_camera_url.setReadOnly(True)
         self.side_camera_stream_key = QLineEdit()
         self.side_camera_stream_key.setReadOnly(True)
@@ -70,7 +70,7 @@ class ConnectionPage(QWidget):
         form.addRow("Website/Pi UI URL", self.website_url)
         form.addRow("ESP URL", self.esp_url)
         form.addRow("Webcam index", self.camera_index)
-        form.addRow("Camo RTMPS server URL", self.side_camera_url)
+        form.addRow("Camo RTMP server URL", self.side_camera_url)
         form.addRow("Camo stream key", self.side_camera_stream_key)
         form.addRow("", self.mock_pi)
         form.addRow("", self.fake_esp)
@@ -80,7 +80,7 @@ class ConnectionPage(QWidget):
         self.test_pi_button = QPushButton("Test Pi Connection")
         self.test_esp_button = QPushButton("Test ESP Connection")
         self.test_camera_button = QPushButton("Test Webcam")
-        self.test_side_camera_button = QPushButton("Test RTMPS Relay")
+        self.test_side_camera_button = QPushButton("Test RTMP Relay")
         self.save_button = QPushButton("Save Settings")
         self.save_button.setObjectName("primaryButton")
         for button in (
@@ -155,6 +155,6 @@ class ConnectionPage(QWidget):
         default = "Side camera connected" if connected else "Side camera disconnected"
         self.side_camera_status.set_state(message or default, "green" if connected else "red")
 
-    def set_side_camera_rtmps_details(self, server_url: str, stream_key: str) -> None:
+    def set_side_camera_rtmp_details(self, server_url: str, stream_key: str) -> None:
         self.side_camera_url.setText(server_url)
         self.side_camera_stream_key.setText(stream_key)
