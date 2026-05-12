@@ -46,7 +46,7 @@ class DetectionResult:
             return None
         payload: dict[str, Any] = {
             "type": "object_detected",
-            "object": "green_object",
+            "object": "selected_object",
             "pixelX": int(self.pixel_x),
             "pixelY": int(self.pixel_y),
             "confidence": float(self.confidence),

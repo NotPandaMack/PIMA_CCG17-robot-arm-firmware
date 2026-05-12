@@ -8,7 +8,7 @@ from time import perf_counter
 from typing import Any
 
 from PySide6.QtCore import QTimer, Qt, QThreadPool
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QColor, QImage, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QFileDialog,
@@ -299,6 +299,7 @@ class MainWindow(QMainWindow):
         self.camera_page.start_camera_requested.connect(self.start_camera)
         self.camera_page.stop_camera_requested.connect(self.stop_camera)
         self.camera_page.send_target_requested.connect(self.send_detected_target)
+        self.camera_page.sample_object_color_requested.connect(self.sample_object_color)
         self.camera_page.save_hsv_requested.connect(self.save_hsv_profile)
         self.camera_page.reset_hsv_requested.connect(self.reset_hsv_profile)
         self.camera_page.profile_changed.connect(self.update_hsv_profile)
@@ -876,7 +877,8 @@ class MainWindow(QMainWindow):
         self.last_detection = detection
         self.last_robot_xy = robot_xy
         if detection.found:
-            text = f"Green object: pixel X {detection.pixel_x}, Y {detection.pixel_y}, confidence {detection.confidence:.2f}, area {detection.area:.0f}"
+            object_name = str(self.settings.get("visionObjectName", "Selected object"))
+            text = f"{object_name}: pixel X {detection.pixel_x}, Y {detection.pixel_y}, confidence {detection.confidence:.2f}, area {detection.area:.0f}"
             if robot_xy:
                 robot_text = f"Robot coordinate: X {robot_xy[0]:.1f} mm, Y {robot_xy[1]:.1f} mm. Target valid if inside workspace."
                 self.last_target_status = "valid" if detection.confidence >= 0.75 else "low confidence"
@@ -928,20 +930,65 @@ class MainWindow(QMainWindow):
 
         self._run_background(task, on_result, "Target not sent to website")
 
+    def sample_object_color(self, x: int, y: int) -> None:
+        if self.last_camera_frame is None:
+            self.log("Object color not sampled: camera frame is missing.")
+            return
+        h, w = self.last_camera_frame.shape[:2]
+        if x < 0 or y < 0 or x >= w or y >= h:
+            self.log("Object color not sampled: click is outside the camera frame.")
+            return
+        import cv2
+
+        hsv = cv2.cvtColor(self.last_camera_frame, cv2.COLOR_BGR2HSV)
+        px = hsv[max(0, y - 2) : min(h, y + 3), max(0, x - 2) : min(w, x + 3)]
+        if px.size == 0:
+            self.log("Object color not sampled: no pixels were captured.")
+            return
+        mean = px.reshape(-1, 3).mean(axis=0)
+        sample = {"h": float(mean[0]), "s": float(mean[1]), "v": float(mean[2]), "toleranceH": 12.0, "toleranceS": 80.0, "toleranceV": 80.0}
+        profile = self._profile_from_hsv_sample(sample)
+        self.settings["visionObjectName"] = "sampled object"
+        self.camera_page.set_profile(profile)
+        self.camera_page.set_object_color_sample(
+            QColor.fromHsv(int(round(mean[0])), int(round(mean[1])), int(round(mean[2]))),
+            (float(mean[0]), float(mean[1]), float(mean[2])),
+        )
+        self.update_hsv_profile(profile)
+        self.log(f"Sampled object color at {x}, {y}.")
+
     def _website_target_payload(self, detection: DetectionResult, robot_xy: tuple[float, float] | None) -> dict[str, Any] | None:
         if robot_xy is None:
             return None
         robot_z = self._default_target_z()
         pitch = self._default_target_pitch()
+        object_name = str(self.settings.get("visionObjectName", "selected_object")).strip() or "selected_object"
         return {
             "source": "vision_gui",
-            "object": "green_object",
+            "object": object_name,
             "robotX": float(robot_xy[0]),
             "robotY": float(robot_xy[1]),
             "robotZ": robot_z,
             "pitch": pitch,
             "confidence": float(detection.confidence),
         }
+
+    def _profile_from_hsv_sample(self, sample: dict[str, float]) -> HSVProfile:
+        h = float(sample.get("h", 40.0))
+        s = float(sample.get("s", 80.0))
+        v = float(sample.get("v", 80.0))
+        lower = int(max(0.0, round(h - 12.0)))
+        upper = int(min(179.0, round(h + 12.0)))
+        saturation_min = int(max(0.0, round(s - 70.0)))
+        value_min = int(max(0.0, round(v - 70.0)))
+        min_area = float(self.settings.get("hsv", DEFAULT_HSV_PROFILE).get("minArea", 350.0))
+        return HSVProfile(
+            lower_hue=lower,
+            upper_hue=upper,
+            saturation_min=saturation_min,
+            value_min=value_min,
+            min_area=float(min_area),
+        )
 
     def _default_target_z(self) -> float:
         if self.last_esp_status and isinstance(self.last_esp_status.get("z"), (int, float)):
@@ -972,8 +1019,10 @@ class MainWindow(QMainWindow):
     def reset_hsv_profile(self) -> None:
         profile = HSVProfile.from_settings(DEFAULT_HSV_PROFILE)
         self.camera_page.set_profile(profile)
+        self.camera_page.clear_object_color_sample()
+        self.settings["visionObjectName"] = "selected object"
         self.update_hsv_profile(profile)
-        self.log("HSV profile reset to green-object defaults.")
+        self.log("HSV profile reset to default object-detection settings.")
 
     def set_continuous_send(self, enabled: bool) -> None:
         self.settings["continuousSend"] = enabled

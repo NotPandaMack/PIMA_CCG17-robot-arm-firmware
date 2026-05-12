@@ -349,6 +349,7 @@ class CameraPage(QWidget):
     start_camera_requested = Signal()
     stop_camera_requested = Signal()
     send_target_requested = Signal()
+    sample_object_color_requested = Signal(int, int)
     save_hsv_requested = Signal()
     reset_hsv_requested = Signal()
     profile_changed = Signal(object)
@@ -370,11 +371,38 @@ class CameraPage(QWidget):
         button_row = QHBoxLayout()
         self.start_button = QPushButton("Start Camera")
         self.stop_button = QPushButton("Stop Camera")
-        self.send_button = QPushButton("Send Detected Target to Pi")
+        self.send_button = QPushButton("Send to Vision Target Website")
         self.send_button.setObjectName("primaryButton")
         for button in (self.start_button, self.stop_button, self.send_button):
             button_row.addWidget(button)
         controls_layout.addLayout(button_row)
+
+        color_box = QFrame()
+        color_box.setObjectName("subPanel")
+        color_layout = QVBoxLayout(color_box)
+        color_layout.addWidget(QLabel("Object Color Picker"))
+        color_hint = QLabel("Click the object in the camera view after arming the picker. The sampled color updates the detection range.")
+        color_hint.setWordWrap(True)
+        color_layout.addWidget(color_hint)
+
+        color_row = QHBoxLayout()
+        self.object_color_swatch = QLabel()
+        self.object_color_swatch.setFixedSize(34, 22)
+        self.object_color_swatch.setObjectName("objectColorSwatch")
+        self.object_color_label = QLabel("No sampled object color yet.")
+        self.object_color_label.setWordWrap(True)
+        color_row.addWidget(self.object_color_swatch)
+        color_row.addWidget(self.object_color_label, 1)
+        color_layout.addLayout(color_row)
+
+        color_buttons = QHBoxLayout()
+        self.pick_color_button = QPushButton("Pick Object Color From Camera")
+        self.pick_color_button.setCheckable(True)
+        self.reset_color_button = QPushButton("Reset Object Color")
+        color_buttons.addWidget(self.pick_color_button)
+        color_buttons.addWidget(self.reset_color_button)
+        color_layout.addLayout(color_buttons)
+        controls_layout.addWidget(color_box)
 
         self.continuous = QCheckBox("Continuously send target to Pi")
         self.rate = QSpinBox()
@@ -425,8 +453,11 @@ class CameraPage(QWidget):
         self.send_button.clicked.connect(self.send_target_requested.emit)
         self.save_hsv_button.clicked.connect(self.save_hsv_requested.emit)
         self.reset_hsv_button.clicked.connect(self.reset_hsv_requested.emit)
+        self.reset_color_button.clicked.connect(self._reset_color_picker)
+        self.pick_color_button.clicked.connect(self._arm_color_picker)
         self.continuous.toggled.connect(self.continuous_changed.emit)
         self.rate.valueChanged.connect(lambda value: self.rate_changed.emit(float(value)))
+        self.camera_view.mapped_clicked.connect(self._handle_camera_click)
         for slider in (self.lower_hue, self.upper_hue, self.sat_min, self.val_min):
             slider.valueChanged.connect(self._emit_profile)
         self.min_area.valueChanged.connect(self._emit_profile)
@@ -452,8 +483,40 @@ class CameraPage(QWidget):
         self.robot_label.setText(robot_text)
         self.send_button.setEnabled(can_send)
 
+    def set_object_color_sample(self, color: QColor, hsv: tuple[float, float, float]) -> None:
+        self.object_color_swatch.setStyleSheet(
+            f"background-color: {color.name()}; border: 1px solid #475569; border-radius: 4px;"
+        )
+        h, s, v = hsv
+        self.object_color_label.setText(f"Sampled color: H {h:.0f}, S {s:.0f}, V {v:.0f}")
+
+    def clear_object_color_sample(self) -> None:
+        self.object_color_swatch.setStyleSheet("background-color: transparent; border: 1px solid #475569; border-radius: 4px;")
+        self.object_color_label.setText("No sampled object color yet.")
+
     def _emit_profile(self) -> None:
         self.profile_changed.emit(self.profile())
+
+    def _arm_color_picker(self, checked: bool) -> None:
+        if checked:
+            self.pick_color_button.setText("Click Object in Camera")
+        else:
+            self.pick_color_button.setText("Pick Object Color From Camera")
+
+    def _handle_camera_click(self, mapped: object) -> None:
+        if not self.pick_color_button.isChecked():
+            return
+        if isinstance(mapped, dict):
+            try:
+                self.sample_object_color_requested.emit(int(mapped["pixelX"]), int(mapped["pixelY"]))
+            finally:
+                self.pick_color_button.setChecked(False)
+                self.pick_color_button.setText("Pick Object Color From Camera")
+
+    def _reset_color_picker(self) -> None:
+        self.pick_color_button.setChecked(False)
+        self.pick_color_button.setText("Pick Object Color From Camera")
+        self.clear_object_color_sample()
 
     @staticmethod
     def _slider(minimum: int, maximum: int, value: int) -> QSlider:
