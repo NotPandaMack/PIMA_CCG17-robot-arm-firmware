@@ -487,7 +487,7 @@ class CalibrationPage(QWidget):
         if not isinstance(status.get("z"), (int, float)):
             raise ValueError("no valid ESP pose or website IK draft Z is available")
         x, y = self.depth_pending_tip
-        sample = {
+        sample: dict = {
             "robotZ": float(status["z"]),
             "pixel": {"x": int(x), "y": int(y)},
             "depthMm": float(sample_info["depthMm"]),
@@ -495,6 +495,8 @@ class CalibrationPage(QWidget):
             "heightAboveTableMm": float(sample_info["heightAboveTableMm"]),
             "source": status.get("source", "unknown source"),
         }
+        if isinstance(status.get("y"), (int, float)):
+            sample["robotY"] = float(status["y"])
         if status.get("manualControlState"):
             sample["manualControlState"] = status["manualControlState"]
         if status.get("espStatus"):
@@ -573,15 +575,18 @@ class CalibrationPage(QWidget):
         error_mm = float(self.realsense_fit.get("fit", {}).get("errorMm", 0.0))
         method_label = "two-sample" if self.realsense_fit.get("method") == "realsense_two_sample" else "multi-sample"
         warning = f"  ⚠ error {error_mm:.1f} mm — recapture anchors" if error_mm > 5.0 else ""
+        slope = self.realsense_fit.get("hoverSlopeZperY")
+        slope_text = f", Y-slope {slope:.3f} Z/mm" if isinstance(slope, (int, float)) else " (no Y-slope — anchors at same Y)"
         self.depth_fit_status.setText(
             f"Table height learned ({method_label}): tableZ {self.realsense_fit['z']:.1f} mm, "
-            f"hoverZ {self.realsense_fit['safeHoverZ']:.1f} mm, error {error_mm:.1f} mm.{warning}"
+            f"hoverZ {self.realsense_fit.get('hoverRefZ', self.realsense_fit['safeHoverZ']):.1f} mm"
+            f"{slope_text}, error {error_mm:.1f} mm.{warning}"
         )
         self.validation_summary.setText(
             f"D415 table height ({method_label}). tableZ {self.realsense_fit['z']:.1f}, "
             f"safeHoverZ {self.realsense_fit['safeHoverZ']:.1f}, "
             f"lowApproachZ {self.realsense_fit['lowApproachZ']:.1f}, liftZ {self.realsense_fit['liftZ']:.1f}, "
-            f"zAxisInverted {z_axis_inverted}."
+            f"zAxisInverted {z_axis_inverted}{slope_text}."
         )
         self._update_realsense_sample_cards()
         self.update_wizard_status()
@@ -590,12 +595,14 @@ class CalibrationPage(QWidget):
         lines = []
         if self.realsense_low_anchor:
             s = self.realsense_low_anchor
-            lines.append(f"LOW:  robotZ {s['robotZ']:.1f}, height {s['heightAboveTableMm']:.1f} mm")
+            y_text = f", Y {s['robotY']:.1f}" if isinstance(s.get("robotY"), (int, float)) else ""
+            lines.append(f"LOW:  robotZ {s['robotZ']:.1f}{y_text}, height {s['heightAboveTableMm']:.1f} mm")
         else:
             lines.append("LOW:  — (not captured)")
         if self.realsense_high_anchor:
             s = self.realsense_high_anchor
-            lines.append(f"HIGH: robotZ {s['robotZ']:.1f}, height {s['heightAboveTableMm']:.1f} mm")
+            y_text = f", Y {s['robotY']:.1f}" if isinstance(s.get("robotY"), (int, float)) else ""
+            lines.append(f"HIGH: robotZ {s['robotZ']:.1f}{y_text}, height {s['heightAboveTableMm']:.1f} mm")
         else:
             lines.append("HIGH: — (not captured)")
         for index, sample in enumerate(self.realsense_samples, start=1):
@@ -811,11 +818,11 @@ class CalibrationPage(QWidget):
         d415_instructions = QLabel(
             "D415 depth steps (two-anchor method):\n"
             "1. Aim the D415 down at an angle so it sees the desk and the claw.\n"
-            "2. Move the arm HIGH (safe height above table) from the website controls.\n"
-            "3. In the D415 Color tab, click the visible claw tip, then click Capture HIGH Anchor.\n"
-            "4. Move the arm LOW (near table but NOT touching) from the website controls.\n"
-            "5. Click the claw tip again, then click Capture LOW Anchor.\n"
-            "The two-anchor method auto-detects z_axis_inverted — no table plane needed."
+            "2. Move the arm to MAXIMUM Y reach (farthest you'll pick objects from) and LOW\n"
+            "   (near table but NOT touching). Click claw tip → Capture LOW Anchor.\n"
+            "3. Move the arm HIGH (safe hover height) at any Y. Click claw tip → Capture HIGH Anchor.\n"
+            "Tip: capture LOW and HIGH at DIFFERENT Y values to enable Y-dependent safe hover\n"
+            "(compensates for the elbow dropping as the arm extends at high Y)."
         )
         d415_instructions.setWordWrap(True)
         depth_layout.addWidget(QLabel("RealSense D415 Angled Depth"))

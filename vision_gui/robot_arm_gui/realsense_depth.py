@@ -166,17 +166,22 @@ def fit_realsense_table_z_two_sample(
     low_anchor: dict[str, Any],
     high_anchor: dict[str, Any],
     safety_margin_mm: float = 10.0,
+    hover_clearance_mm: float = 60.0,
 ) -> dict[str, Any]:
     """Fit table Z from exactly two anchor positions.
 
-    low_anchor: sample captured with the arm near the table
-    high_anchor: sample captured with the arm raised high above the table
+    low_anchor: sample captured with the arm near the table (ideally at max Y reach)
+    high_anchor: sample captured with the arm raised to a safe hover height
 
     z_axis_inverted is auto-detected from the sign relationship between
     delta_robot_z and delta_height_above_table:
     - Inverted (higher Z number = physically lower): physically high arm has SMALLER robot Z
       → delta_robot_z (high - low) < 0 while delta_height > 0 → opposite signs
     - Not inverted: delta_robot_z > 0 and delta_height > 0 → same signs
+
+    If both anchors carry a robotY, a hoverSlopeZperY is computed — the rate
+    at which the safe hover Z must change per mm of Y to compensate for the
+    elbow dropping as the arm extends (high Y = elbow near table).
     """
     low_robot_z, low_h = _extract_anchor_values(low_anchor)
     high_robot_z, high_h = _extract_anchor_values(high_anchor)
@@ -200,11 +205,16 @@ def fit_realsense_table_z_two_sample(
 
     table_z = (est_low + est_high) / 2.0
     error_mm = abs(est_high - est_low) / 2.0
-    return {
+
+    # HIGH anchor Z is the measured safe hover position at that arm Y
+    hover_ref_z = float(high_robot_z)
+
+    result: dict[str, Any] = {
         "method": "realsense_two_sample",
         "zAxisInverted": bool(z_axis_inverted),
         "z": float(table_z),
         "safetyMarginMm": float(safety_margin_mm),
+        "hoverRefZ": hover_ref_z,
         "lowAnchor": low_anchor,
         "highAnchor": high_anchor,
         "fit": {
@@ -213,6 +223,24 @@ def fit_realsense_table_z_two_sample(
             "estHighMm": float(est_high),
         },
     }
+
+    # If both anchors include a Y position, compute the Y-dependent hover slope.
+    # As Y increases (arm extends), the elbow drops; the safe hover Z must shift
+    # to maintain elbow clearance. slope = dZ/dY between the LOW anchor Y
+    # (where nominal table-clearance hover is tableZ ± hoverClearance) and the
+    # HIGH anchor Y (where the user positioned the arm at its actual safe hover).
+    low_y = float(low_anchor["robotY"]) if isinstance(low_anchor.get("robotY"), (int, float)) else None
+    high_y = float(high_anchor["robotY"]) if isinstance(high_anchor.get("robotY"), (int, float)) else None
+
+    if high_y is not None:
+        result["hoverRefY"] = high_y
+    if low_y is not None and high_y is not None and abs(high_y - low_y) >= 5.0:
+        z_sign = -1.0 if z_axis_inverted else 1.0
+        # Nominal safe hover at the LOW anchor Y (from table Z + clearance)
+        nominal_hover_at_low_y = table_z + (z_sign * hover_clearance_mm)
+        result["hoverSlopeZperY"] = float((hover_ref_z - nominal_hover_at_low_y) / (high_y - low_y))
+
+    return result
 
 
 def _extract_anchor_values(anchor: dict[str, Any]) -> tuple[float, float]:

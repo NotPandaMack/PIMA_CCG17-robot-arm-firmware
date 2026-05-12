@@ -146,6 +146,26 @@ class GuiCalibrationTests(unittest.TestCase):
         self.assertTrue(result["zAxisInverted"])
         self.assertAlmostEqual(160.0, result["z"], delta=0.01)
         self.assertAlmostEqual(0.0, result["fit"]["errorMm"], delta=0.01)
+        self.assertEqual(80.0, result["hoverRefZ"])
+        self.assertNotIn("hoverSlopeZperY", result)  # no Y data → no slope
+
+    def test_two_sample_y_slope_inverted(self):
+        # LOW anchor at max Y reach (Y=210), arm near table (Z=140, height=20) → tableZ=160
+        # HIGH anchor at moderate Y (Y=150), arm at safe hover (Z=80, height=80)
+        # safeHoverZ at Y=210 (nominal) = 160 - 60 = 100
+        # slope = (hoverRefZ - nominalHoverAtLowY) / (highY - lowY)
+        #       = (80 - 100) / (150 - 210) = -20 / -60 = 1/3
+        low = {"robotZ": 140.0, "heightAboveTableMm": 20.0, "robotY": 210.0}
+        high = {"robotZ": 80.0, "heightAboveTableMm": 80.0, "robotY": 150.0}
+        result = fit_realsense_table_z_two_sample(low_anchor=low, high_anchor=high)
+        self.assertTrue(result["zAxisInverted"])
+        self.assertAlmostEqual(160.0, result["z"], delta=0.01)
+        self.assertEqual(150.0, result["hoverRefY"])
+        self.assertEqual(80.0, result["hoverRefZ"])
+        self.assertAlmostEqual(1.0 / 3.0, result["hoverSlopeZperY"], delta=0.001)
+        # safeHoverZ at Y=210 should be: 80 + (1/3)*(210-150) = 80+20 = 100 ✓ (= tableZ - 60)
+        z_at_max_y = result["hoverRefZ"] + result["hoverSlopeZperY"] * (210.0 - result["hoverRefY"])
+        self.assertAlmostEqual(100.0, z_at_max_y, delta=0.01)
 
     def test_two_sample_fit_not_inverted(self):
         # Non-inverted: physically higher arm = larger Z number

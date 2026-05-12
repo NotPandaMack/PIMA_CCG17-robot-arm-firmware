@@ -962,7 +962,7 @@ class MainWindow(QMainWindow):
     def _website_target_payload(self, detection: DetectionResult, robot_xy: tuple[float, float] | None) -> dict[str, Any] | None:
         if robot_xy is None:
             return None
-        robot_z = self._default_target_z()
+        robot_z = self._default_target_z(robot_xy[1])
         pitch = self._default_target_pitch()
         object_name = str(self.settings.get("visionObjectName", "selected_object")).strip() or "selected_object"
         return {
@@ -992,18 +992,31 @@ class MainWindow(QMainWindow):
             min_area=float(min_area),
         )
 
-    def _default_target_z(self) -> float:
+    def _default_target_z(self, target_y: float | None = None) -> float:
         # Use calibrated safe hover height — never the current arm Z, which would
         # send the arm to its present height at a new XY and cause a desk collision.
+        #
+        # When target_y is provided and the calibration has a Y-dependent hover slope
+        # (hoverRefZ, hoverRefY, hoverSlopeZperY), the safe hover Z is adjusted for
+        # the target's Y position: as Y increases the elbow drops, requiring more clearance.
+        table_z_dict = self.calibration.get("tableZ")
+        if isinstance(table_z_dict, dict) and target_y is not None:
+            hover_ref_z = table_z_dict.get("hoverRefZ")
+            hover_ref_y = table_z_dict.get("hoverRefY")
+            slope = table_z_dict.get("hoverSlopeZperY")
+            if all(isinstance(v, (int, float)) and math.isfinite(float(v)) for v in (hover_ref_z, hover_ref_y, slope)):
+                adjusted = float(hover_ref_z) + float(slope) * (float(target_y) - float(hover_ref_y))
+                if math.isfinite(adjusted):
+                    return adjusted
         for key in ("safeHoverZ", "hoverZ"):
             val = self.calibration.get(key)
             if isinstance(val, (int, float)) and math.isfinite(float(val)):
                 return float(val)
-        table_z_dict = self.calibration.get("tableZ")
         if isinstance(table_z_dict, dict):
-            val = table_z_dict.get("safeHoverZ")
-            if isinstance(val, (int, float)) and math.isfinite(float(val)):
-                return float(val)
+            for key in ("safeHoverZ", "hoverRefZ"):
+                val = table_z_dict.get(key)
+                if isinstance(val, (int, float)) and math.isfinite(float(val)):
+                    return float(val)
         return 80.0
 
     def _default_target_pitch(self) -> float:
@@ -1067,7 +1080,7 @@ class MainWindow(QMainWindow):
                     "object": "calibration_validation",
                     "robotX": robot_xy[0],
                     "robotY": robot_xy[1],
-                    "robotZ": self._default_target_z(),
+                    "robotZ": self._default_target_z(float(robot_xy[1])),
                     "pitch": self._default_target_pitch(),
                     "confidence": 1.0,
                 }
