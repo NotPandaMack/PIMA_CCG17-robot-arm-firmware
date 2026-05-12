@@ -1192,14 +1192,18 @@ class MainWindow(QMainWindow):
         self._run_background(task, on_result, "D415 table plane learning failed")
 
     def save_realsense_anchor_sample(self, role: str = "anchor") -> None:
+        def _block(reason: str) -> None:
+            self.log(f"D415 sample blocked: {reason}")
+            self.calibration_page.depth_fit_status.setText(f"⚠ {reason}")
+
         if self.calibration_page.depth_pending_tip is None:
-            self.log("D415 sample blocked: click the visible claw tip in the color view first.")
+            _block("click the visible claw tip in the D415 Color tab first, then capture the anchor.")
             return
         if self.calibration_page.realsense_table_plane is None:
-            self.log("D415 sample blocked: learn the table plane first.")
+            _block("learn the table plane first (click Learn Table Plane while the claw is out of the way), then capture anchors.")
             return
         if self.last_depth_frame is None or self.last_realsense_intrinsics is None or self.last_depth_scale is None:
-            self.log("D415 sample blocked: depth frame is missing.")
+            _block("no D415 depth frame — make sure the depth camera is running.")
             return
         x, y = self.calibration_page.depth_pending_tip
         depth_mm = sample_depth_mm(self.last_depth_frame, x, y, radius=4, depth_scale=float(self.last_depth_scale))
@@ -1944,6 +1948,26 @@ class MainWindow(QMainWindow):
                 border-radius: 6px;
                 padding: 7px 10px;
                 font-weight: 700;
+            }
+            QScrollArea {
+                background: transparent;
+                border: none;
+            }
+            QScrollArea > QWidget > QWidget {
+                background: transparent;
+            }
+            QScrollBar:vertical {
+                background: #0d1116;
+                width: 8px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical {
+                background: #394858;
+                border-radius: 4px;
+                min-height: 24px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
             }
             """
         )

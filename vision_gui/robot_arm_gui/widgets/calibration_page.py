@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QProgressBar,
     QSpinBox,
@@ -147,8 +148,21 @@ class CalibrationPage(QWidget):
         right = QFrame()
         right.setObjectName("panel")
         right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
+
+        # Scrollable container for wizard + advanced panels so content is never clipped
+        right_scroll = QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setFrameShape(QFrame.NoFrame)
+        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        right_inner = QWidget()
+        right_inner_layout = QVBoxLayout(right_inner)
+        right_inner_layout.setContentsMargins(8, 8, 8, 8)
+        right_inner_layout.setSpacing(8)
+
         self.wizard_panel = self._auto_wizard_panel()
-        right_layout.addWidget(self.wizard_panel)
+        right_inner_layout.addWidget(self.wizard_panel)
         self.stack = QStackedWidget()
         self.stack.addWidget(self._camera_step())
         self.stack.addWidget(self._origin_step())
@@ -159,8 +173,9 @@ class CalibrationPage(QWidget):
         self.stack.addWidget(self._validation_step())
         self.stack.addWidget(self._finish_step())
         self.advanced_toggle = QCheckBox("Advanced manual calibration")
-        right_layout.addWidget(self.advanced_toggle)
-        right_layout.addWidget(self.stack, 1)
+        right_inner_layout.addWidget(self.advanced_toggle)
+        right_inner_layout.addWidget(self.stack)
+        right_inner_layout.addStretch(1)
 
         nav = QHBoxLayout()
         self.back_button = QPushButton("Back")
@@ -172,7 +187,10 @@ class CalibrationPage(QWidget):
         nav.addWidget(self.next_button)
         self.advanced_nav = QWidget()
         self.advanced_nav.setLayout(nav)
-        right_layout.addWidget(self.advanced_nav)
+        right_inner_layout.addWidget(self.advanced_nav)
+
+        right_scroll.setWidget(right_inner)
+        right_layout.addWidget(right_scroll, 1)
         self.page_layout.addWidget(right, 0, 1)
         self.page_layout.setColumnStretch(0, 4)
         self.page_layout.setColumnStretch(1, 2)
@@ -752,7 +770,7 @@ class CalibrationPage(QWidget):
             ("top_markers", "Put the four ArUco papers flat on the table in the 2D webcam view, then scan top markers."),
             ("origin", "In the Top 2D Webcam tab, click the exact center of the robot's rotating base."),
             ("plane", "In the D415 views, make sure the desk surface fills most of the frame, then click Learn Table Plane."),
-            ("anchors", "Use the website to move the claw to a HIGH safe height and a LOW near-table height. In the D415 Color tab, click the claw tip and capture each anchor."),
+            ("anchors", "Learn the table plane first (claw clear of frame), then move the claw to LOW (max Y, near table) and HIGH (safe hover) positions. Click the claw tip in D415 Color tab and capture each anchor."),
         ]:
             if not values[key]:
                 return text
@@ -817,12 +835,12 @@ class CalibrationPage(QWidget):
         self.depth_fit_status.setWordWrap(True)
         d415_instructions = QLabel(
             "D415 depth steps (two-anchor method):\n"
-            "1. Aim the D415 down at an angle so it sees the desk and the claw.\n"
-            "2. Move the arm to MAXIMUM Y reach (farthest you'll pick objects from) and LOW\n"
-            "   (near table but NOT touching). Click claw tip → Capture LOW Anchor.\n"
-            "3. Move the arm HIGH (safe hover height) at any Y. Click claw tip → Capture HIGH Anchor.\n"
-            "Tip: capture LOW and HIGH at DIFFERENT Y values to enable Y-dependent safe hover\n"
-            "(compensates for the elbow dropping as the arm extends at high Y)."
+            "1. Aim D415 so it sees the desk and claw. Click Learn Table Plane (claw out of frame).\n"
+            "2. Move arm to MAXIMUM Y reach (farthest pick distance), near table (not touching).\n"
+            "   Click claw tip in D415 Color tab → Capture LOW Anchor.\n"
+            "3. Move arm HIGH (safe hover height) at a different Y.\n"
+            "   Click claw tip → Capture HIGH Anchor.\n"
+            "Different Y values enable Y-dependent hover Z (compensates for elbow drop at high Y)."
         )
         d415_instructions.setWordWrap(True)
         depth_layout.addWidget(QLabel("RealSense D415 Angled Depth"))
