@@ -12,7 +12,7 @@ MARKER_DEFINITIONS: dict[int, dict[str, Any]] = {
     3: {"label": "back-right", "short": "BR", "robot": {"x": 150.0, "y": 260.0}},
 }
 
-SIDE_BOARD_MARKER_IDS = tuple(range(20, 26))
+SIDE_BOARD_MARKER_IDS = tuple(range(20, 32))
 
 
 LABEL_TO_ID = {definition["label"]: marker_id for marker_id, definition in MARKER_DEFINITIONS.items()}
@@ -308,9 +308,20 @@ def _side_marker(marker_id: int, marker_corners: Any, source: str) -> dict[str, 
 def _detect_side_board_blocks(cv2: Any, gray: Any) -> list[dict[str, Any]]:
     import numpy as np
 
-    _threshold, binary = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY_INV)
-    contours, _hierarchy = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    dark_binary = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY_INV)[1]
+    light_binary = cv2.threshold(gray, 175, 255, cv2.THRESH_BINARY)[1]
     frame_area = float(gray.shape[0] * gray.shape[1])
+    candidates = _side_board_candidates(cv2, dark_binary, frame_area) + _side_board_candidates(cv2, light_binary, frame_area)
+    candidates.sort(key=lambda item: (item[1], item[0]))
+    markers = []
+    for offset, (_x, _y, points) in enumerate(candidates[: len(SIDE_BOARD_MARKER_IDS)]):
+        ordered = _order_quad_points(np.array(points, dtype="float32"))
+        markers.append(_side_marker(SIDE_BOARD_MARKER_IDS[offset], ordered, "side-board-visual"))
+    return markers
+
+
+def _side_board_candidates(cv2: Any, binary: Any, frame_area: float) -> list[tuple[int, int, Any]]:
+    contours, _hierarchy = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     candidates = []
     for contour in contours:
         area = float(cv2.contourArea(contour))
@@ -328,12 +339,7 @@ def _detect_side_board_blocks(cv2: Any, gray: Any) -> list[dict[str, Any]]:
         if aspect < 0.72 or aspect > 1.28:
             continue
         candidates.append((x, y, points))
-    candidates.sort(key=lambda item: (item[1], item[0]))
-    markers = []
-    for offset, (_x, _y, points) in enumerate(candidates[: len(SIDE_BOARD_MARKER_IDS)]):
-        ordered = _order_quad_points(np.array(points, dtype="float32"))
-        markers.append(_side_marker(SIDE_BOARD_MARKER_IDS[offset], ordered, "side-board-visual"))
-    return markers
+    return candidates
 
 
 def _order_quad_points(points: Any) -> Any:
