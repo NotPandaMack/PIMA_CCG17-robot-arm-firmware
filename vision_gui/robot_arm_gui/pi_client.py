@@ -107,6 +107,17 @@ class PiClient:
         suffix = "?hoverOnly=true" if hover_only else ""
         return self._request("POST", f"/vision/pick{suffix}", json={}, timeout=1.0)
 
+    def get_website_vision_target(self) -> dict[str, Any]:
+        if self.mock:
+            return {"hasTarget": self._mock_target is not None, "target": deepcopy(self._mock_target)}
+        return self._request("GET", "/api/vision-target", timeout=0.5)
+
+    def clear_website_vision_target(self) -> dict[str, Any]:
+        if self.mock:
+            self._mock_target = None
+            return {"ok": True, "hasTarget": False}
+        return self._request("POST", "/api/vision-target/clear", json={}, timeout=0.5)
+
     def esp_status(self) -> dict[str, Any]:
         if self.mock:
             return {"status": "mock", "x": 0.0, "y": 170.0, "z": 80.0, "pitch": -8.0, "estop": False}

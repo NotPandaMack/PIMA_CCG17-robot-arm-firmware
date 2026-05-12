@@ -134,6 +134,8 @@ class MainWindow(QMainWindow):
         self.last_realsense_intrinsics: dict[str, Any] | None = None
         self.last_realsense_metadata: dict[str, Any] | None = None
         self.last_target_status = "none"
+        self.last_website_target: dict[str, Any] | None = None
+        self._last_website_target_ts: str | None = None
         self.last_send_at = 0.0
         self.camera_worker: Any | None = None
         self.realsense_worker: Any | None = None
@@ -356,6 +358,9 @@ class MainWindow(QMainWindow):
         self.auto_pick_timer.start(500)
         self._stable_since: float | None = None
         self._last_auto_pick_at = 0.0
+        self._website_target_timer = QTimer(self)
+        self._website_target_timer.timeout.connect(self._poll_website_target_async)
+        self._website_target_timer.start(2000)
 
     def _load_startup_files_async(self) -> None:
         self.log("Startup safe mode: Setup is ready. Hardware has not been tested yet.")
@@ -1613,12 +1618,25 @@ class MainWindow(QMainWindow):
         if not hover_only and not self.settings.get("motionEnabled"):
             self.log("Full pickup blocked: motion is not enabled. Use 'Enable Motion' first.")
             return
-        if not self.last_detection or not self.last_detection.found:
-            self.log("Pick blocked: no valid object detection.")
-            return
-        payload = self.last_detection.as_payload(self.last_robot_xy)
+        # Build pick payload — local camera detection takes priority over website target
+        payload: dict[str, Any] | None = None
+        if self.last_detection and self.last_detection.found:
+            payload = self.last_detection.as_payload(self.last_robot_xy)
+        if payload is None and self.last_website_target is not None:
+            wt = self.last_website_target
+            rx, ry = wt.get("robotX"), wt.get("robotY")
+            if isinstance(rx, (int, float)) and isinstance(ry, (int, float)):
+                payload = {
+                    "type": "object_detected",
+                    "object": str(wt.get("object", "object")),
+                    "pixelX": 0,
+                    "pixelY": 0,
+                    "confidence": float(wt.get("confidence", 1.0)),
+                    "robotX": float(rx),
+                    "robotY": float(ry),
+                }
         if payload is None:
-            self.log("Pick blocked: target has no robot coordinates.")
+            self.log("Pick blocked: no valid detection or website target.")
             return
         pi_url = self.settings["piUrl"]
         mock = bool(self.settings.get("mockPi"))
@@ -1721,12 +1739,50 @@ class MainWindow(QMainWindow):
         else:
             self.log("Auto-pick disabled.")
 
+    def _poll_website_target_async(self) -> None:
+        if not self.pi_connected and not self.settings.get("mockPi"):
+            return
+        pi_url = self.settings["piUrl"]
+        mock_pi = bool(self.settings.get("mockPi"))
+
+        def task() -> dict[str, Any]:
+            return PiClient(pi_url, mock=mock_pi).get_website_vision_target()
+
+        def on_result(result: dict[str, Any]) -> None:
+            target = result.get("target") if result.get("hasTarget") else None
+            new_ts = target.get("receivedAt") if isinstance(target, dict) else None
+            if new_ts == self._last_website_target_ts and target is not None:
+                return  # same target as before — nothing changed
+            prev_had_target = self.last_website_target is not None
+            self.last_website_target = target
+            self._last_website_target_ts = new_ts
+            if target is not None:
+                rx = target.get("robotX")
+                ry = target.get("robotY")
+                conf = target.get("confidence", 0.0)
+                obj = target.get("object", "object")
+                if isinstance(rx, (int, float)) and isinstance(ry, (int, float)):
+                    self.autonomous_page.update_target(
+                        f"Website target: {obj}  X {float(rx):.1f} mm, Y {float(ry):.1f} mm  (confidence {float(conf):.2f})"
+                    )
+                    if self.last_target_status not in ("valid",):
+                        self.last_target_status = "website"
+            elif prev_had_target:
+                if self.last_target_status == "website":
+                    self.last_target_status = "none"
+                    self.autonomous_page.update_target("No target yet.")
+            self.update_ui_state()
+
+        self._run_background(task, on_result, None)
+
     def _auto_pick_tick(self) -> None:
         if not self.settings.get("autoPickEnabled"):
             self._stable_since = None
             return
         state = self.checklist_state()
-        if not state.full_pickup_ready or not self.last_detection or not self.last_detection.found:
+        has_local = bool(self.last_detection and self.last_detection.found)
+        has_website = self.last_target_status == "website" and self.last_website_target is not None
+        if not state.full_pickup_ready or (not has_local and not has_website):
             self._stable_since = None
             return
         now = time.monotonic()
@@ -1769,7 +1825,7 @@ class MainWindow(QMainWindow):
             ghost_preview_passed=bool(self.settings.get("ghostPreviewPassed")),
             hover_only_movement_passed=bool(self.settings.get("hoverOnlyMovementPassed")),
             motion_enabled=bool(self.settings.get("motionEnabled")),
-            target_valid=self.last_target_status == "valid",
+            target_valid=self.last_target_status in ("valid", "website"),
             estop_inactive=not estop_active,
         )
 
@@ -1794,7 +1850,7 @@ class MainWindow(QMainWindow):
         self.hover_preview_button.setEnabled(state.target_valid and calibrated)
         pi_ok = self.pi_connected or bool(self.settings.get("mockPi"))
         motion_enabled = bool(self.settings.get("motionEnabled"))
-        can_hover = pi_ok and calibrated and self.last_target_status == "valid"
+        can_hover = pi_ok and calibrated and self.last_target_status in ("valid", "website")
         can_pick = can_hover and motion_enabled
         self.autonomous_page.set_buttons(
             can_preview=state.target_valid and calibrated,
