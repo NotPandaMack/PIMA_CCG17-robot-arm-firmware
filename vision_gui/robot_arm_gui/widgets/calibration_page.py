@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QSpinBox,
     QStackedWidget,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -101,11 +102,31 @@ class CalibrationPage(QWidget):
         self.progress.setRange(0, len(CALIBRATION_STEPS))
         self.grid_overlay = QCheckBox("Show calibration grid overlay")
         self.camera_view = CameraView()
+        self.side_camera_view = CameraView()
+        self.side_camera_view.setMinimumSize(860, 520)
+        self.side_camera_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.side_camera_view.mapped_clicked.connect(lambda mapped: self.handle_side_click(int(mapped["pixelX"]), int(mapped["pixelY"])))
+
+        self.preview_tabs = QTabWidget()
+        top_tab = QWidget()
+        top_layout = QVBoxLayout(top_tab)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.addWidget(self.grid_overlay)
+        top_layout.addWidget(self.camera_view, 1)
+        side_tab = QWidget()
+        side_layout = QVBoxLayout(side_tab)
+        side_layout.setContentsMargins(0, 0, 0, 0)
+        side_hint = QLabel("Side camera preview. Use the Side View controls in the wizard panel to start DroidCam and choose click mode.")
+        side_hint.setWordWrap(True)
+        side_layout.addWidget(side_hint)
+        side_layout.addWidget(self.side_camera_view, 1)
+        self.preview_tabs.addTab(top_tab, "Top Camera")
+        self.preview_tabs.addTab(side_tab, "Side View")
+
         left_layout.addWidget(self.title)
         left_layout.addWidget(self.instructions)
         left_layout.addWidget(self.progress)
-        left_layout.addWidget(self.grid_overlay)
-        left_layout.addWidget(self.camera_view, 1)
+        left_layout.addWidget(self.preview_tabs, 1)
         self.page_layout.addWidget(left, 0, 0)
 
         right = QFrame()
@@ -138,7 +159,7 @@ class CalibrationPage(QWidget):
         self.advanced_nav.setLayout(nav)
         right_layout.addWidget(self.advanced_nav)
         self.page_layout.addWidget(right, 0, 1)
-        self.page_layout.setColumnStretch(0, 3)
+        self.page_layout.setColumnStretch(0, 4)
         self.page_layout.setColumnStretch(1, 2)
 
         self.back_button.clicked.connect(lambda: self.set_step(max(0, self.step_index - 1)))
@@ -158,12 +179,8 @@ class CalibrationPage(QWidget):
         self.instructions.setText(instructions)
         self.stack.setCurrentIndex(self.step_index)
         self.progress.setValue(self.step_index + 1)
-        if self.step_index == 4:
-            self.page_layout.setColumnStretch(0, 1)
-            self.page_layout.setColumnStretch(1, 3)
-        else:
-            self.page_layout.setColumnStretch(0, 3)
-            self.page_layout.setColumnStretch(1, 2)
+        self.page_layout.setColumnStretch(0, 4)
+        self.page_layout.setColumnStretch(1, 2)
         self.back_button.setEnabled(self.step_index > 0)
         self.next_button.setEnabled(self.step_index < len(CALIBRATION_STEPS) - 1)
         self.step_changed.emit(self.step_index)
@@ -620,12 +637,6 @@ class CalibrationPage(QWidget):
         stream_layout.addLayout(side_button_row)
         stream_layout.addWidget(self.side_camera_status)
         layout.addWidget(stream_box)
-
-        self.side_camera_view = CameraView()
-        self.side_camera_view.setMinimumSize(760, 420)
-        self.side_camera_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.side_camera_view.mapped_clicked.connect(lambda mapped: self.handle_side_click(int(mapped["pixelX"]), int(mapped["pixelY"])))
-        layout.addWidget(self.side_camera_view, 1)
 
         controls = QFrame()
         controls.setObjectName("subPanel")
