@@ -492,9 +492,11 @@ class CalibrationPage(QWidget):
 
     def apply_realsense_table_plane(self, table_plane: dict) -> None:
         self.realsense_table_plane = table_plane
+        rms = float(table_plane.get("rmsErrorMm", 0.0))
+        rms_note = "" if rms <= 15.0 else "  ⚠ Too noisy (need < 15 mm) — clear table, avoid shiny/dark surfaces, re-learn."
         self.depth_table_status.setText(
             f"Table plane learned: {int(table_plane.get('inlierCount', 0))} depth points, "
-            f"RMS {float(table_plane.get('rmsErrorMm', 0.0)):.1f} mm."
+            f"RMS {rms:.1f} mm.{rms_note}"
         )
         self._update_realsense_fit()
         self.update_wizard_status()
