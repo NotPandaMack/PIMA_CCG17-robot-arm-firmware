@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSizePolicy,
     QProgressBar,
     QSpinBox,
     QStackedWidget,
@@ -81,8 +82,8 @@ class CalibrationPage(QWidget):
         self._side_table_clicks: list[tuple[int, int]] = []
         self.validation_pixel: tuple[int, int] | None = None
 
-        layout = QGridLayout(self)
-        layout.setSpacing(14)
+        self.page_layout = QGridLayout(self)
+        self.page_layout.setSpacing(14)
 
         left = QFrame()
         left.setObjectName("panel")
@@ -100,7 +101,7 @@ class CalibrationPage(QWidget):
         left_layout.addWidget(self.progress)
         left_layout.addWidget(self.grid_overlay)
         left_layout.addWidget(self.camera_view, 1)
-        layout.addWidget(left, 0, 0)
+        self.page_layout.addWidget(left, 0, 0)
 
         right = QFrame()
         right.setObjectName("panel")
@@ -125,9 +126,9 @@ class CalibrationPage(QWidget):
         nav.addWidget(self.save_step_button)
         nav.addWidget(self.next_button)
         right_layout.addLayout(nav)
-        layout.addWidget(right, 0, 1)
-        layout.setColumnStretch(0, 3)
-        layout.setColumnStretch(1, 2)
+        self.page_layout.addWidget(right, 0, 1)
+        self.page_layout.setColumnStretch(0, 3)
+        self.page_layout.setColumnStretch(1, 2)
 
         self.back_button.clicked.connect(lambda: self.set_step(max(0, self.step_index - 1)))
         self.next_button.clicked.connect(lambda: self.set_step(min(len(CALIBRATION_STEPS) - 1, self.step_index + 1)))
@@ -142,6 +143,12 @@ class CalibrationPage(QWidget):
         self.instructions.setText(instructions)
         self.stack.setCurrentIndex(self.step_index)
         self.progress.setValue(self.step_index + 1)
+        if self.step_index == 4:
+            self.page_layout.setColumnStretch(0, 1)
+            self.page_layout.setColumnStretch(1, 3)
+        else:
+            self.page_layout.setColumnStretch(0, 3)
+            self.page_layout.setColumnStretch(1, 2)
         self.back_button.setEnabled(self.step_index > 0)
         self.next_button.setEnabled(self.step_index < len(CALIBRATION_STEPS) - 1)
         self.step_changed.emit(self.step_index)
@@ -534,10 +541,13 @@ class CalibrationPage(QWidget):
 
     def _table_z_step(self) -> QWidget:
         page = QWidget()
-        layout = QVBoxLayout(page)
+        layout = QGridLayout(page)
+        layout.setColumnStretch(0, 3)
+        layout.setColumnStretch(1, 2)
+        layout.setRowStretch(1, 1)
         intro = QLabel("Open the website on the monitor as ?mode=side-calibration-board and put it full screen behind the robot. Move only from the trusted website controls, then record visual claw-tip samples here.")
         intro.setWordWrap(True)
-        layout.addWidget(intro)
+        layout.addWidget(intro, 0, 0, 1, 2)
 
         stream_box = QFrame()
         stream_box.setObjectName("subPanel")
@@ -560,12 +570,13 @@ class CalibrationPage(QWidget):
         stream_layout.addWidget(self.side_stream_url)
         stream_layout.addLayout(button_row)
         stream_layout.addWidget(self.side_camera_status)
-        layout.addWidget(stream_box)
+        layout.addWidget(stream_box, 2, 0)
 
         self.side_camera_view = CameraView()
-        self.side_camera_view.setMinimumSize(480, 270)
+        self.side_camera_view.setMinimumSize(860, 480)
+        self.side_camera_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.side_camera_view.mapped_clicked.connect(lambda mapped: self.handle_side_click(int(mapped["pixelX"]), int(mapped["pixelY"])))
-        layout.addWidget(self.side_camera_view)
+        layout.addWidget(self.side_camera_view, 1, 0)
 
         controls = QFrame()
         controls.setObjectName("subPanel")
@@ -576,8 +587,11 @@ class CalibrationPage(QWidget):
         self.side_safety_margin = self._double(8.0, 0.0, 50.0)
         controls_layout.addRow("Side-view click mode", self.side_click_mode)
         controls_layout.addRow("Safety margin mm", self.side_safety_margin)
-        layout.addWidget(controls)
+        layout.addWidget(controls, 2, 1)
 
+        status_box = QFrame()
+        status_box.setObjectName("subPanel")
+        status_layout = QVBoxLayout(status_box)
         self.side_board_status = QLabel("Monitor board detected: no.")
         self.side_table_status = QLabel("Table line set: no.")
         self.side_tip_status = QLabel("Pending claw-tip click: none.")
@@ -593,25 +607,28 @@ class CalibrationPage(QWidget):
             self.side_fit_status,
         ):
             label.setWordWrap(True)
-            layout.addWidget(label)
+            status_layout.addWidget(label)
 
         save_side_sample = QPushButton("Save Side Sample From Current ESP Pose")
         save_side_sample.setObjectName("primaryButton")
         save_side_sample.clicked.connect(self.save_side_sample_requested.emit)
-        layout.addWidget(save_side_sample)
+        status_layout.addWidget(save_side_sample)
         self.side_samples_status = QLabel("No side-view samples saved.")
         self.side_samples_status.setWordWrap(True)
-        layout.addWidget(self.side_samples_status)
+        status_layout.addWidget(self.side_samples_status)
+        status_layout.addStretch(1)
+        layout.addWidget(status_box, 1, 1)
 
         fallback_label = QLabel("Advanced manual touch fallback")
         fallback_label.setObjectName("sectionTitle")
-        layout.addWidget(fallback_label)
+        layout.addWidget(fallback_label, 3, 0, 1, 2)
         fallback_intro = QLabel("Only use this if visual side-view calibration is unavailable. Move the arm from the website and save current poses; this GUI still never sends lowering commands.")
         fallback_intro.setWordWrap(True)
-        layout.addWidget(fallback_intro)
+        layout.addWidget(fallback_intro, 4, 0, 1, 2)
         self.table_point_status_labels: dict[str, QLabel] = {}
         self.table_point_source_labels: dict[str, QLabel] = {}
-        for label in TABLE_POINTS:
+        fallback_grid = QGridLayout()
+        for index, label in enumerate(TABLE_POINTS):
             box = QFrame()
             box.setObjectName("subPanel")
             box_layout = QVBoxLayout(box)
@@ -627,17 +644,17 @@ class CalibrationPage(QWidget):
             box_layout.addWidget(button)
             self.table_point_status_labels[label] = status
             self.table_point_source_labels[label] = source
-            layout.addWidget(box)
+            fallback_grid.addWidget(box, index // 3, index % 3)
+        layout.addLayout(fallback_grid, 5, 0, 1, 2)
         self.table_status = QLabel("No touch points saved.")
         self.table_status.setWordWrap(True)
         self.table_source_status = QLabel("Move from the website first, then save. Source details will appear here.")
         self.table_source_status.setWordWrap(True)
         self.table_z_summary = QLabel("Table Z method: placeholder until at least three points are saved.")
         self.table_z_summary.setWordWrap(True)
-        layout.addWidget(self.table_status)
-        layout.addWidget(self.table_z_summary)
-        layout.addWidget(self.table_source_status)
-        layout.addStretch(1)
+        layout.addWidget(self.table_status, 6, 0, 1, 2)
+        layout.addWidget(self.table_z_summary, 7, 0, 1, 2)
+        layout.addWidget(self.table_source_status, 8, 0, 1, 2)
         return page
 
     def _pickup_step(self) -> QWidget:
