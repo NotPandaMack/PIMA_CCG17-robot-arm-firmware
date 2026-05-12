@@ -423,9 +423,9 @@ class CalibrationPage(QWidget):
         return {"method": "placeholder", "z": 0.0, "points": self.table_points}
 
     def _update_side_fit(self) -> None:
-        if not self.side_table_line or len(self.side_samples) < 2:
+        if not self.side_table_line or len(self.side_samples) < 3:
             self.side_fit = None
-            self.side_fit_status.setText(f"Fit ready: no. Samples: {len(self.side_samples)} / 2 minimum.")
+            self.side_fit_status.setText(f"Fit ready: no. Samples: {len(self.side_samples)} / 3 minimum.")
             return
         try:
             self.side_fit = fit_side_view_table_z(
@@ -489,6 +489,8 @@ class CalibrationPage(QWidget):
             if self.claw_marker:
                 pixel = self.claw_marker.get("pixel", {})
                 self.side_camera_view.set_marker(int(pixel.get("x", 0)), int(pixel.get("y", 0)), f"claw {float(self.claw_marker.get('confidence', 0.0)):.2f}")
+            elif not self.side_pending_tip:
+                self.side_camera_view.set_marker(None, None)
 
     def set_claw_marker_color(self, hsv: dict) -> None:
         self.claw_marker_hsv = hsv
@@ -598,6 +600,68 @@ class CalibrationPage(QWidget):
         action_row.addWidget(self.detect_top_button)
         action_row.addWidget(self.detect_side_button)
         layout.addLayout(action_row)
+
+        stream_box = QFrame()
+        stream_box.setObjectName("subPanel")
+        stream_layout = QVBoxLayout(stream_box)
+        self.side_stream_url = QLineEdit()
+        self.side_stream_url.setPlaceholderText(DEFAULT_SIDE_CAMERA_URL)
+        side_button_row = QHBoxLayout()
+        start_button = QPushButton("Start Side Camera")
+        stop_button = QPushButton("Stop Side Camera")
+        start_button.clicked.connect(lambda: self.start_side_camera_requested.emit(self.side_stream_url.text().strip()))
+        stop_button.clicked.connect(self.stop_side_camera_requested.emit)
+        side_button_row.addWidget(start_button)
+        side_button_row.addWidget(stop_button)
+        self.side_camera_status = QLabel("Side camera stopped.")
+        self.side_camera_status.setWordWrap(True)
+        stream_layout.addWidget(QLabel("Side View / DroidCam Camera"))
+        stream_layout.addWidget(self.side_stream_url)
+        stream_layout.addLayout(side_button_row)
+        stream_layout.addWidget(self.side_camera_status)
+        layout.addWidget(stream_box)
+
+        self.side_camera_view = CameraView()
+        self.side_camera_view.setMinimumSize(760, 420)
+        self.side_camera_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.side_camera_view.mapped_clicked.connect(lambda mapped: self.handle_side_click(int(mapped["pixelX"]), int(mapped["pixelY"])))
+        layout.addWidget(self.side_camera_view, 1)
+
+        controls = QFrame()
+        controls.setObjectName("subPanel")
+        controls_layout = QFormLayout(controls)
+        self.side_click_mode = QComboBox()
+        self.side_click_mode.addItem("Click table line points", "table")
+        self.side_click_mode.addItem("Click claw tip sample", "tip")
+        self.side_click_mode.addItem("Sample claw marker color", "sample_color")
+        self.side_safety_margin = self._double(10.0, 0.0, 50.0)
+        controls_layout.addRow("Side-view click mode", self.side_click_mode)
+        controls_layout.addRow("Safety margin mm", self.side_safety_margin)
+        layout.addWidget(controls)
+
+        status_box = QFrame()
+        status_box.setObjectName("subPanel")
+        status_layout = QVBoxLayout(status_box)
+        self.side_board_status = QLabel("Monitor board detected: no.")
+        self.side_table_status = QLabel("Table line set: no.")
+        self.side_tip_status = QLabel("Pending claw-tip click: none.")
+        self.side_high_status = QLabel("High sample missing")
+        self.side_low_status = QLabel("Low sample missing")
+        self.side_fit_status = QLabel("Fit ready: no. Samples: 0 / 3 minimum.")
+        for label in (
+            self.side_board_status,
+            self.side_table_status,
+            self.side_tip_status,
+            self.side_high_status,
+            self.side_low_status,
+            self.side_fit_status,
+        ):
+            label.setWordWrap(True)
+            status_layout.addWidget(label)
+        self.side_samples_status = QLabel("No side-view samples saved.")
+        self.side_samples_status.setWordWrap(True)
+        status_layout.addWidget(self.side_samples_status)
+        layout.addWidget(status_box)
 
         claw_row = QHBoxLayout()
         self.auto_track_claw = QCheckBox("Auto-track claw marker")
@@ -733,86 +797,16 @@ class CalibrationPage(QWidget):
         layout.setColumnStretch(0, 3)
         layout.setColumnStretch(1, 2)
         layout.setRowStretch(1, 1)
-        intro = QLabel("Open the website on the monitor as ?mode=side-calibration-board and put it full screen behind the robot. Start the DroidCam side feed, move only from the trusted website controls, then record visual claw-tip samples here.")
+        intro = QLabel("Side camera preview, table-line clicks, claw-tip clicks, and visual Z samples are now in the main Auto Calibration Wizard. This advanced section only keeps the old manual touch fallback.")
         intro.setWordWrap(True)
         layout.addWidget(intro, 0, 0, 1, 2)
 
-        stream_box = QFrame()
-        stream_box.setObjectName("subPanel")
-        stream_layout = QVBoxLayout(stream_box)
-        self.side_stream_url = QLineEdit()
-        self.side_stream_url.setPlaceholderText(DEFAULT_SIDE_CAMERA_URL)
-        button_row = QHBoxLayout()
-        start_button = QPushButton("Use Side Camera")
-        stop_button = QPushButton("Stop Side Camera")
-        detect_button = QPushButton("Detect Board")
-        start_button.clicked.connect(lambda: self.start_side_camera_requested.emit(self.side_stream_url.text().strip()))
-        stop_button.clicked.connect(self.stop_side_camera_requested.emit)
-        detect_button.clicked.connect(self.detect_side_board_requested.emit)
-        button_row.addWidget(start_button)
-        button_row.addWidget(stop_button)
-        button_row.addWidget(detect_button)
-        self.side_camera_status = QLabel("Side camera stopped.")
-        self.side_camera_status.setWordWrap(True)
-        stream_layout.addWidget(QLabel("Side View / DroidCam Camera"))
-        stream_layout.addWidget(self.side_stream_url)
-        stream_layout.addLayout(button_row)
-        stream_layout.addWidget(self.side_camera_status)
-        layout.addWidget(stream_box, 2, 0)
-
-        self.side_camera_view = CameraView()
-        self.side_camera_view.setMinimumSize(860, 480)
-        self.side_camera_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.side_camera_view.mapped_clicked.connect(lambda mapped: self.handle_side_click(int(mapped["pixelX"]), int(mapped["pixelY"])))
-        layout.addWidget(self.side_camera_view, 1, 0)
-
-        controls = QFrame()
-        controls.setObjectName("subPanel")
-        controls_layout = QFormLayout(controls)
-        self.side_click_mode = QComboBox()
-        self.side_click_mode.addItem("Click table line points", "table")
-        self.side_click_mode.addItem("Click claw tip sample", "tip")
-        self.side_safety_margin = self._double(8.0, 0.0, 50.0)
-        controls_layout.addRow("Side-view click mode", self.side_click_mode)
-        controls_layout.addRow("Safety margin mm", self.side_safety_margin)
-        layout.addWidget(controls, 2, 1)
-
-        status_box = QFrame()
-        status_box.setObjectName("subPanel")
-        status_layout = QVBoxLayout(status_box)
-        self.side_board_status = QLabel("Monitor board detected: no.")
-        self.side_table_status = QLabel("Table line set: no.")
-        self.side_tip_status = QLabel("Pending claw-tip click: none.")
-        self.side_high_status = QLabel("High sample missing")
-        self.side_low_status = QLabel("Low sample missing")
-        self.side_fit_status = QLabel("Fit ready: no. Samples: 0 / 2 minimum.")
-        for label in (
-            self.side_board_status,
-            self.side_table_status,
-            self.side_tip_status,
-            self.side_high_status,
-            self.side_low_status,
-            self.side_fit_status,
-        ):
-            label.setWordWrap(True)
-            status_layout.addWidget(label)
-
-        save_side_sample = QPushButton("Save Side Sample From Current ESP Pose")
-        save_side_sample.setObjectName("primaryButton")
-        save_side_sample.clicked.connect(self.save_side_sample_requested.emit)
-        status_layout.addWidget(save_side_sample)
-        self.side_samples_status = QLabel("No side-view samples saved.")
-        self.side_samples_status.setWordWrap(True)
-        status_layout.addWidget(self.side_samples_status)
-        status_layout.addStretch(1)
-        layout.addWidget(status_box, 1, 1)
-
         fallback_label = QLabel("Advanced manual touch fallback")
         fallback_label.setObjectName("sectionTitle")
-        layout.addWidget(fallback_label, 3, 0, 1, 2)
+        layout.addWidget(fallback_label, 1, 0, 1, 2)
         fallback_intro = QLabel("Only use this if visual side-view calibration is unavailable. Move the arm from the website and save current poses; this GUI still never sends lowering commands.")
         fallback_intro.setWordWrap(True)
-        layout.addWidget(fallback_intro, 4, 0, 1, 2)
+        layout.addWidget(fallback_intro, 2, 0, 1, 2)
         self.table_point_status_labels: dict[str, QLabel] = {}
         self.table_point_source_labels: dict[str, QLabel] = {}
         fallback_grid = QGridLayout()
@@ -833,16 +827,16 @@ class CalibrationPage(QWidget):
             self.table_point_status_labels[label] = status
             self.table_point_source_labels[label] = source
             fallback_grid.addWidget(box, index // 3, index % 3)
-        layout.addLayout(fallback_grid, 5, 0, 1, 2)
+        layout.addLayout(fallback_grid, 3, 0, 1, 2)
         self.table_status = QLabel("No touch points saved.")
         self.table_status.setWordWrap(True)
         self.table_source_status = QLabel("Move from the website first, then save. Source details will appear here.")
         self.table_source_status.setWordWrap(True)
         self.table_z_summary = QLabel("Table Z method: placeholder until at least three points are saved.")
         self.table_z_summary.setWordWrap(True)
-        layout.addWidget(self.table_status, 6, 0, 1, 2)
-        layout.addWidget(self.table_z_summary, 7, 0, 1, 2)
-        layout.addWidget(self.table_source_status, 8, 0, 1, 2)
+        layout.addWidget(self.table_status, 4, 0, 1, 2)
+        layout.addWidget(self.table_z_summary, 5, 0, 1, 2)
+        layout.addWidget(self.table_source_status, 6, 0, 1, 2)
         return page
 
     def _pickup_step(self) -> QWidget:

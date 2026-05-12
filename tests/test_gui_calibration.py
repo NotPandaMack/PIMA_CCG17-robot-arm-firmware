@@ -84,6 +84,7 @@ class GuiCalibrationTests(unittest.TestCase):
             table_line={"p1": {"x": 100, "y": 400}, "p2": {"x": 500, "y": 400}},
             samples=[
                 {"robotZ": 40.0, "pixel": {"x": 220, "y": 240}, "source": "ESP pose"},
+                {"robotZ": 60.0, "pixel": {"x": 220, "y": 280}, "source": "ESP pose"},
                 {"robotZ": 80.0, "pixel": {"x": 220, "y": 320}, "source": "website IK draft"},
             ],
             safety_margin_mm=8.0,
