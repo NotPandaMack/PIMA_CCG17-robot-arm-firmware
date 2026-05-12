@@ -30,6 +30,7 @@ class VisionConfig:
     safe_hover_z: float = 80.0
     grab_offset_z: float = 10.0
     lift_z: float = 100.0
+    pre_approach_raise_mm: float = 100.0
     z_axis_inverted: bool = True
     close_claw_degrees: int = 55
     move_duration_ms: int = 1200
@@ -45,6 +46,7 @@ CONFIG_KEYS = {
     "safeHoverZ",
     "grabOffsetZ",
     "liftZ",
+    "preApproachRaiseMm",
     "zAxisInverted",
     "closeClawDegrees",
     "moveDurationMs",
@@ -102,6 +104,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> VisionConfig:
         safe_hover_z=_as_float(raw.get("safeHoverZ"), defaults.safe_hover_z),
         grab_offset_z=_as_float(raw.get("grabOffsetZ"), defaults.grab_offset_z),
         lift_z=_as_float(raw.get("liftZ"), defaults.lift_z),
+        pre_approach_raise_mm=_as_float(raw.get("preApproachRaiseMm"), defaults.pre_approach_raise_mm),
         z_axis_inverted=_as_bool(raw.get("zAxisInverted"), defaults.z_axis_inverted),
         close_claw_degrees=_as_int(raw.get("closeClawDegrees"), defaults.close_claw_degrees),
         move_duration_ms=_as_int(raw.get("moveDurationMs"), defaults.move_duration_ms),
@@ -119,6 +122,7 @@ def config_to_dict(config: VisionConfig) -> dict[str, Any]:
         "safeHoverZ": config.safe_hover_z,
         "grabOffsetZ": config.grab_offset_z,
         "liftZ": config.lift_z,
+        "preApproachRaiseMm": config.pre_approach_raise_mm,
         "zAxisInverted": config.z_axis_inverted,
         "closeClawDegrees": config.close_claw_degrees,
         "moveDurationMs": config.move_duration_ms,
@@ -202,6 +206,7 @@ def _strict_config(raw: dict[str, Any]) -> VisionConfig:
     safe_hover_z = _strict_float(raw.get("safeHoverZ"), "safeHoverZ", 0.0)
     grab_offset_z = _strict_float(raw.get("grabOffsetZ"), "grabOffsetZ")
     lift_z = _strict_float(raw.get("liftZ"), "liftZ", 0.0)
+    pre_approach_raise_mm = _strict_float(raw.get("preApproachRaiseMm"), "preApproachRaiseMm", 0.0)
     z_axis_inverted = z_axis_inverted_raw
     close_claw_degrees = _strict_int(raw.get("closeClawDegrees"), "closeClawDegrees", 0, 180)
     move_duration_ms = _strict_int(raw.get("moveDurationMs"), "moveDurationMs", 1)
@@ -215,6 +220,7 @@ def _strict_config(raw: dict[str, Any]) -> VisionConfig:
         safe_hover_z=safe_hover_z,
         grab_offset_z=grab_offset_z,
         lift_z=lift_z,
+        pre_approach_raise_mm=pre_approach_raise_mm,
         z_axis_inverted=z_axis_inverted,
         close_claw_degrees=close_claw_degrees,
         move_duration_ms=move_duration_ms,

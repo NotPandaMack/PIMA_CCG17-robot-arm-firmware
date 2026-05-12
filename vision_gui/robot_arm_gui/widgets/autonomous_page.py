@@ -20,6 +20,7 @@ class AutonomousPage(QWidget):
     preview_requested = Signal(bool)
     pick_requested = Signal(bool)
     auto_pick_changed = Signal(bool)
+    enable_motion_changed = Signal(bool)
 
     def __init__(self) -> None:
         super().__init__()
@@ -42,21 +43,28 @@ class AutonomousPage(QWidget):
         right_layout = QVBoxLayout(right)
         self.preview_button = QPushButton("Generate Preview")
         self.hover_preview_button = QPushButton("Send Hover Target to Website")
-        self.hover_test_button = QPushButton("Hover Movement Disabled in PyGUI")
-        self.pick_button = QPushButton("Full Pickup Disabled in PyGUI")
+        self.hover_test_button = QPushButton("Execute Hover Test")
+        self.pick_button = QPushButton("Execute Full Pickup")
         self.pick_button.setObjectName("primaryButton")
+        self.enable_motion_button = QPushButton("Enable Motion")
+        self.enable_motion_button.setCheckable(True)
+        self.pick_status_label = QLabel("Idle")
         self.auto_pick = QCheckBox("Auto Pick When Object Is Stable")
         self.cooldown = QSpinBox()
         self.cooldown.setRange(2, 120)
         self.cooldown.setValue(8)
+        self.table_z_label = QLabel("Table Z: —")
         self.plan_text = QTextEdit()
         self.plan_text.setReadOnly(True)
         for button in (self.preview_button, self.hover_preview_button, self.hover_test_button, self.pick_button):
             right_layout.addWidget(button)
+        right_layout.addWidget(self.enable_motion_button)
+        right_layout.addWidget(self.pick_status_label)
         right_layout.addWidget(self.auto_pick)
         right_layout.addWidget(QLabel("Auto-pick cooldown seconds"))
         right_layout.addWidget(self.cooldown)
-        right_layout.addWidget(QLabel("Website target / preview details"))
+        right_layout.addWidget(self.table_z_label)
+        right_layout.addWidget(QLabel("Pick plan details"))
         right_layout.addWidget(self.plan_text, 1)
         layout.addWidget(right, 1)
 
@@ -65,6 +73,7 @@ class AutonomousPage(QWidget):
         self.hover_test_button.clicked.connect(lambda: self.pick_requested.emit(True))
         self.pick_button.clicked.connect(lambda: self.pick_requested.emit(False))
         self.auto_pick.toggled.connect(self.auto_pick_changed.emit)
+        self.enable_motion_button.toggled.connect(self.enable_motion_changed.emit)
 
     def update_target(self, text: str) -> None:
         self.target_label.setText(text)
@@ -79,11 +88,12 @@ class AutonomousPage(QWidget):
             f"will send motion: {plan.get('willSendMotion')}",
             f"target robotX: {calculated.get('robotX')}",
             f"target robotY: {calculated.get('robotY')}",
+            f"tableZ: {calculated.get('tableZ')}",
+            f"safeRaiseZ: {calculated.get('safeRaiseZ')}",
             f"hoverZ: {calculated.get('hoverZ')}",
             f"skimGrabZ: {calculated.get('skimGrabZ')}",
             f"liftZ: {calculated.get('liftZ')}",
             f"pickupPitchDeg: {calculated.get('pickupPitchDeg')}",
-            f"tableZ: {calculated.get('tableZ')}",
         ]
         if errors:
             lines.append("")
@@ -94,8 +104,20 @@ class AutonomousPage(QWidget):
         lines.extend(commands or ["(no commands)"])
         self.plan_text.setPlainText("\n".join(lines))
 
-    def set_buttons(self, *, can_preview: bool, can_hover: bool, can_pick: bool) -> None:
+    def set_pick_status(self, status: str) -> None:
+        self.pick_status_label.setText(status)
+
+    def set_table_z(self, table_z: float | None) -> None:
+        if table_z is None:
+            self.table_z_label.setText("Table Z: not calibrated")
+        else:
+            self.table_z_label.setText(f"Table Z: {table_z:.1f} mm")
+
+    def set_buttons(self, *, can_preview: bool, can_hover: bool, can_pick: bool, motion_enabled: bool = False) -> None:
         self.preview_button.setEnabled(can_preview)
         self.hover_preview_button.setEnabled(can_preview)
         self.hover_test_button.setEnabled(can_hover)
         self.pick_button.setEnabled(can_pick)
+        self.enable_motion_button.blockSignals(True)
+        self.enable_motion_button.setChecked(motion_enabled)
+        self.enable_motion_button.blockSignals(False)

@@ -20,6 +20,7 @@ def build_pick_plan(
     calibration: dict[str, Any],
     hover_only: bool = False,
     now: datetime | None = None,
+    current_position: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     now = now or datetime.now(UTC)
     errors: list[str] = []
@@ -54,11 +55,14 @@ def build_pick_plan(
     hover_z = table_z + (z_sign * config.safe_hover_z)
     grab_z = table_z + (z_sign * config.grab_offset_z)
     lift_z = table_z + (z_sign * config.lift_z)
+    safe_raise_z = table_z + (z_sign * config.pre_approach_raise_mm)
 
-    bounds_result = workspace_validation(config, x, y, [hover_z] if hover_only else [hover_z, grab_z, lift_z])
+    z_values_hover = [safe_raise_z, hover_z]
+    z_values_full = [safe_raise_z, hover_z, grab_z, lift_z]
+    bounds_result = workspace_validation(config, x, y, z_values_hover if hover_only else z_values_full)
     if not bounds_result["ok"]:
         errors.extend(bounds_result["errors"])
-    collision_result = table_clearance_validation(config, table_z, [hover_z] if hover_only else [hover_z, grab_z, lift_z])
+    collision_result = table_clearance_validation(config, table_z, z_values_hover if hover_only else z_values_full)
     if not collision_result["ok"]:
         errors.extend(collision_result["errors"])
 
@@ -72,10 +76,18 @@ def build_pick_plan(
     commands: list[str] = []
     if _finite(pickup_pitch):
         pitch = float(pickup_pitch)
+        # Use current position for the pre-approach raise so the arm lifts from wherever it is.
+        # Fall back to target coords in preview/test mode when current_position is unavailable.
+        if current_position is not None:
+            raise_x = float(current_position.get("x", x))
+            raise_y = float(current_position.get("y", y))
+        else:
+            raise_x, raise_y = x, y
         commands = [
             "STOP",
             "CLEAR_TIMELINE",
             "CLAW_OPEN",
+            _keyframe("MOVE", raise_x, raise_y, safe_raise_z, pitch, -1, config),
             _keyframe("MOVE", x, y, hover_z, pitch, -1, config),
         ]
         if not hover_only:
@@ -99,6 +111,7 @@ def build_pick_plan(
             "robotX": x,
             "robotY": y,
             "tableZ": table_z,
+            "safeRaiseZ": safe_raise_z,
             "hoverZ": hover_z,
             "skimGrabZ": grab_z,
             "liftZ": lift_z,
@@ -119,7 +132,7 @@ def build_pick_plan(
     return plan
 
 
-def execute_plan(plan: dict[str, Any], esp_client: Any) -> dict[str, Any]:
+def execute_plan(plan: dict[str, Any], esp_client: Any, esp_status: dict[str, Any] | None = None) -> dict[str, Any]:
     logger.info("Vision pickup plan")
     for index, command in enumerate(plan.get("commands", []), start=1):
         logger.info("%02d %s", index, command)
@@ -132,7 +145,8 @@ def execute_plan(plan: dict[str, Any], esp_client: Any) -> dict[str, Any]:
         logger.warning("motionEnabled is false; ghost mode only")
         return {**plan, "sent": False}
 
-    status = esp_client.get_status()
+    # Use pre-fetched status when available to avoid a redundant network call.
+    status = esp_status if esp_status is not None else esp_client.get_status()
     if status.get("estop") is True:
         blocked = {**plan, "ok": False, "sent": False, "errors": [*plan.get("errors", []), "ESP ESTOP is active"]}
         logger.warning("Pickup blocked: ESP ESTOP is active")
@@ -219,6 +233,7 @@ def _empty_plan(
         "calculated": {
             "robotX": target.get("robotX") if target else None,
             "robotY": target.get("robotY") if target else None,
+            "safeRaiseZ": None,
             "hoverZ": None,
             "skimGrabZ": None,
             "tableZ": None,

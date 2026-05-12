@@ -164,9 +164,16 @@ def preview_pick(hoverOnly: bool = Query(default=False)) -> dict[str, Any]:
 def pick(hoverOnly: bool = Query(default=False)) -> dict[str, Any]:
     config = load_config()
     calibration = load_calibration()
-    plan = build_pick_plan(store.get(), config, calibration, hoverOnly)
     client = EspClient(config.esp_base_url)
-    return execute_plan(plan, client)
+    try:
+        esp_status = client.get_status()
+    except Exception as error:
+        logger.warning("ESP unreachable during pick: %s", error)
+        return {"ok": False, "sent": False, "errors": [f"ESP unreachable: {error}"], "commands": []}
+    if esp_status.get("estop") is True:
+        return {"ok": False, "sent": False, "errors": ["ESP ESTOP is active"], "commands": []}
+    plan = build_pick_plan(store.get(), config, calibration, hoverOnly, current_position=esp_status)
+    return execute_plan(plan, client, esp_status=esp_status)
 
 
 @app.get("/vision/calibration")

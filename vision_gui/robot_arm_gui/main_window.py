@@ -338,6 +338,7 @@ class MainWindow(QMainWindow):
         self.autonomous_page.preview_requested.connect(self.generate_preview)
         self.autonomous_page.pick_requested.connect(self.run_pick)
         self.autonomous_page.auto_pick_changed.connect(self.set_auto_pick_enabled)
+        self.autonomous_page.enable_motion_changed.connect(self.enable_motion_on_server)
 
     def _apply_settings_to_ui(self) -> None:
         self.connection_page.set_from_settings(self.settings)
@@ -1572,11 +1573,73 @@ class MainWindow(QMainWindow):
         self._run_background(task, on_result, "Website target send failed")
 
     def run_pick(self, hover_only: bool) -> None:
-        self.log("PyGUI movement disabled. Send/load the vision target and run Hover/Move from the trusted website UI.")
-        self.generate_preview(hover_only)
+        if not self._preview_gate():
+            return
+        if not hover_only and not self.settings.get("motionEnabled"):
+            self.log("Full pickup blocked: motion is not enabled. Use 'Enable Motion' first.")
+            return
+        if not self.last_detection or not self.last_detection.found:
+            self.log("Pick blocked: no valid object detection.")
+            return
+        payload = self.last_detection.as_payload(self.last_robot_xy)
+        if payload is None:
+            self.log("Pick blocked: target has no robot coordinates.")
+            return
+        pi_url = self.settings["piUrl"]
+        mock = bool(self.settings.get("mockPi"))
+        motion_enabled = bool(self.settings.get("motionEnabled"))
+        self.autonomous_page.set_pick_status("Sending target...")
+        self.autonomous_page.set_buttons(can_preview=False, can_hover=False, can_pick=False, motion_enabled=motion_enabled)
+
+        def task() -> dict[str, Any]:
+            client = PiClient(pi_url, mock=mock)
+            client.post_target(payload)
+            return client.pick(hover_only)
+
+        def on_result(plan: dict[str, Any]) -> None:
+            self.autonomous_page.update_plan(plan)
+            ok = plan.get("ok", False)
+            sent = plan.get("sent", False)
+            if not ok:
+                errors = "; ".join(plan.get("errors", []))
+                self.autonomous_page.set_pick_status(f"Blocked: {errors}")
+                self.log(f"Pick blocked: {errors}")
+            elif sent:
+                if hover_only:
+                    self.settings["hoverOnlyMovementPassed"] = True
+                    save_settings(self.settings)
+                    self.autonomous_page.set_pick_status("Hovering...")
+                else:
+                    self.autonomous_page.set_pick_status("Lifting...")
+                self.log("Pick command sent to ESP.")
+            else:
+                self.autonomous_page.set_pick_status("Plan ok (motion disabled)")
+                self.log("Pick plan generated but motion is disabled on Pi server.")
+            self.update_ui_state()
+
+        self._run_background(task, on_result, "Pick failed")
 
     def enable_motion(self) -> None:
-        self.log("Motion enable is controlled by the trusted website UI. PyGUI stays in target-send mode.")
+        self.enable_motion_on_server(True)
+
+    def enable_motion_on_server(self, enabled: bool) -> None:
+        pi_url = self.settings["piUrl"]
+        mock = bool(self.settings.get("mockPi"))
+
+        def task() -> dict[str, Any]:
+            return PiClient(pi_url, mock=mock).put_config({"motionEnabled": enabled})
+
+        def on_result(result: dict[str, Any]) -> None:
+            actual = result.get("config", {}).get("motionEnabled", enabled)
+            self.settings["motionEnabled"] = actual
+            save_settings(self.settings)
+            if actual:
+                self.log("Motion enabled on Pi server.")
+            else:
+                self.log("Motion disabled on Pi server.")
+            self.update_ui_state()
+
+        self._run_background(task, on_result, "Motion enable/disable failed")
 
     def set_movement_adapter_dry_run(self, enabled: bool) -> None:
         self.settings["movementAdapterDryRun"] = enabled
@@ -1616,14 +1679,12 @@ class MainWindow(QMainWindow):
         self.log("Manual jog disabled in PyGUI. Load and move targets from the trusted website UI.")
 
     def set_auto_pick_enabled(self, enabled: bool) -> None:
-        if enabled:
-            self.autonomous_page.auto_pick.setChecked(False)
-            self.log("Auto-pick disabled in PyGUI. Use the trusted website UI to move after loading a vision target.")
-            enabled = False
-        else:
-            self.log("Auto-pick disabled.")
         self.settings["autoPickEnabled"] = enabled
         save_settings(self.settings)
+        if enabled:
+            self.log("Auto-pick enabled. Object must be stable before a pick triggers.")
+        else:
+            self.log("Auto-pick disabled.")
 
     def _auto_pick_tick(self) -> None:
         if not self.settings.get("autoPickEnabled"):
@@ -1696,11 +1757,19 @@ class MainWindow(QMainWindow):
         self.test_page.set_motion_button_enabled(False)
         self.preview_button.setEnabled(state.target_valid and calibrated)
         self.hover_preview_button.setEnabled(state.target_valid and calibrated)
+        pi_ok = self.pi_connected or bool(self.settings.get("mockPi"))
+        motion_enabled = bool(self.settings.get("motionEnabled"))
+        can_hover = pi_ok and calibrated and self.last_target_status == "valid"
+        can_pick = can_hover and motion_enabled
         self.autonomous_page.set_buttons(
             can_preview=state.target_valid and calibrated,
-            can_hover=False,
-            can_pick=False,
+            can_hover=can_hover,
+            can_pick=can_pick,
+            motion_enabled=motion_enabled,
         )
+        table_z_dict = self.calibration.get("tableZ") if isinstance(self.calibration.get("tableZ"), dict) else {}
+        raw_table_z = table_z_dict.get("z") if isinstance(table_z_dict, dict) else None
+        self.autonomous_page.set_table_z(float(raw_table_z) if isinstance(raw_table_z, (int, float)) else None)
         self.health_pills["pi"].set_state("Pi online" if state.pi_connected else "Pi offline", "green" if state.pi_connected else "red")
         self.health_pills["esp"].set_state("ESP online" if state.esp_connected else "ESP offline", "green" if state.esp_connected else "red")
         if estop_active is None:

@@ -40,8 +40,24 @@ class VisionConfigTests(unittest.TestCase):
     def test_config_to_dict_uses_public_keys(self):
         data = config_to_dict(load_config(Path("/tmp/missing-robot-arm-config.json")))
         self.assertIn("motionEnabled", data)
+        self.assertIn("preApproachRaiseMm", data)
         self.assertIn("workspace", data)
         self.assertIn("xMin", data["workspace"])
+
+    def test_pre_approach_raise_mm_round_trips(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "vision_server_config.json"
+            config = update_config(
+                {
+                    "espBaseUrl": "http://192.168.1.60/",
+                    "motionEnabled": False,
+                    "preApproachRaiseMm": 120.0,
+                },
+                path,
+            )
+            self.assertEqual(120.0, config.pre_approach_raise_mm)
+            self.assertEqual(120.0, load_config(path).pre_approach_raise_mm)
+            self.assertEqual(120.0, config_to_dict(config)["preApproachRaiseMm"])
 
 
 if __name__ == "__main__":

@@ -75,10 +75,13 @@ class VisionSafetyTests(unittest.TestCase):
         plan = build_pick_plan(fresh_target(), VisionConfig(), calibrated(), hover_only=True)
         joined = "\n".join(plan["commands"])
         self.assertTrue(plan["ok"])
+        # Pre-approach raise step must be present (safe_raise_z = table_z - pre_approach_raise_mm = 120 - 100 = 20)
+        self.assertIn("ADD_KEYFRAME:MOVE:35.0:210.0:20.0:-8.0", joined)
+        # Hover approach step must be present
         self.assertIn("ADD_KEYFRAME:MOVE:35.0:210.0:40.0:-8.0", joined)
+        # Grab and lower-to-grab steps must NOT be present in hover-only mode
         self.assertNotIn("ADD_KEYFRAME:GRAB", joined)
         self.assertNotIn(":110.0:-8.0", joined)
-        self.assertNotIn(":20.0:-8.0", joined)
 
     def test_stale_target_is_blocked(self):
         old = datetime.now(UTC) - timedelta(seconds=10)

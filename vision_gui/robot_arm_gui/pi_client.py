@@ -28,6 +28,7 @@ class PiClient:
             "safeHoverZ": 80.0,
             "grabOffsetZ": 10.0,
             "liftZ": 100.0,
+            "preApproachRaiseMm": 100.0,
             "zAxisInverted": True,
             "closeClawDegrees": 55,
             "moveDurationMs": 1200,
@@ -142,11 +143,13 @@ class PiClient:
         hover_z = table_z + (z_sign * float(self._mock_config["safeHoverZ"]))
         grab_z = table_z + (z_sign * float(self._mock_config["grabOffsetZ"]))
         lift_z = table_z + (z_sign * float(self._mock_config["liftZ"]))
+        safe_raise_z = table_z + (z_sign * float(self._mock_config.get("preApproachRaiseMm", 100.0)))
         pitch = float(self._mock_calibration.get("pickupPitchDeg") or -8.0)
         commands = [
             "STOP",
             "CLEAR_TIMELINE",
             "CLAW_OPEN",
+            f"ADD_KEYFRAME:MOVE:{x:.1f}:{y:.1f}:{safe_raise_z:.1f}:{pitch:.1f}:0:-1:1200:200",
             f"ADD_KEYFRAME:MOVE:{x:.1f}:{y:.1f}:{hover_z:.1f}:{pitch:.1f}:0:-1:1200:200",
         ]
         if not hover_only:
@@ -169,6 +172,7 @@ class PiClient:
                 "robotX": x,
                 "robotY": y,
                 "tableZ": table_z,
+                "safeRaiseZ": safe_raise_z,
                 "hoverZ": hover_z,
                 "skimGrabZ": grab_z,
                 "liftZ": lift_z,
