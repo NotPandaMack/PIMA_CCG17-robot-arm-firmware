@@ -23,6 +23,7 @@ class ConnectionPage(QWidget):
     test_pi_requested = Signal()
     test_esp_requested = Signal()
     test_camera_requested = Signal()
+    test_side_camera_requested = Signal()
     auto_detect_requested = Signal()
     start_setup_requested = Signal()
 
@@ -58,12 +59,15 @@ class ConnectionPage(QWidget):
         self.esp_url = QLineEdit()
         self.camera_index = QSpinBox()
         self.camera_index.setRange(0, 12)
+        self.side_camera_url = QLineEdit()
+        self.side_camera_url.setPlaceholderText("http://iphone-ip:port/video or rtsp://...")
         self.mock_pi = QCheckBox("Use mock Pi mode")
         self.fake_esp = QCheckBox("Use fake ESP status")
         form.addRow("Raspberry Pi URL", self.pi_url)
         form.addRow("Website/Pi UI URL", self.website_url)
         form.addRow("ESP URL", self.esp_url)
         form.addRow("Webcam index", self.camera_index)
+        form.addRow("iPhone side camera URL", self.side_camera_url)
         form.addRow("", self.mock_pi)
         form.addRow("", self.fake_esp)
 
@@ -72,15 +76,24 @@ class ConnectionPage(QWidget):
         self.test_pi_button = QPushButton("Test Pi Connection")
         self.test_esp_button = QPushButton("Test ESP Connection")
         self.test_camera_button = QPushButton("Test Webcam")
+        self.test_side_camera_button = QPushButton("Test Side Camera")
         self.save_button = QPushButton("Save Settings")
         self.save_button.setObjectName("primaryButton")
-        for button in (self.auto_detect_button, self.test_pi_button, self.test_esp_button, self.test_camera_button, self.save_button):
+        for button in (
+            self.auto_detect_button,
+            self.test_pi_button,
+            self.test_esp_button,
+            self.test_camera_button,
+            self.test_side_camera_button,
+            self.save_button,
+        ):
             button_row.addWidget(button)
         form.addRow(button_row)
         self.auto_detect_button.clicked.connect(self.auto_detect_requested.emit)
         self.test_pi_button.clicked.connect(self.test_pi_requested.emit)
         self.test_esp_button.clicked.connect(self.test_esp_requested.emit)
         self.test_camera_button.clicked.connect(self.test_camera_requested.emit)
+        self.test_side_camera_button.clicked.connect(self.test_side_camera_requested.emit)
         self.save_button.clicked.connect(self.save_requested.emit)
 
         status_card = QFrame()
@@ -90,9 +103,11 @@ class ConnectionPage(QWidget):
         self.pi_status = StatusPill("Pi disconnected", "red")
         self.esp_status = StatusPill("ESP disconnected", "red")
         self.camera_status = StatusPill("Camera disconnected", "red")
+        self.side_camera_status = StatusPill("Side camera disconnected", "red")
         status_layout.addWidget(self.pi_status)
         status_layout.addWidget(self.esp_status)
         status_layout.addWidget(self.camera_status)
+        status_layout.addWidget(self.side_camera_status)
         status_layout.addStretch(1)
 
         grid.addWidget(settings_card, 0, 0)
@@ -107,6 +122,7 @@ class ConnectionPage(QWidget):
         self.website_url.setText(settings.get("websiteUrl", settings.get("piUrl", "")))
         self.esp_url.setText(settings.get("espUrl", ""))
         self.camera_index.setValue(int(settings.get("cameraIndex", 0)))
+        self.side_camera_url.setText(settings.get("sideCameraUrl", ""))
         self.mock_pi.setChecked(bool(settings.get("mockPi", False)))
         self.fake_esp.setChecked(bool(settings.get("fakeEsp", False)))
 
@@ -116,6 +132,7 @@ class ConnectionPage(QWidget):
             "websiteUrl": self.website_url.text().strip(),
             "espUrl": self.esp_url.text().strip(),
             "cameraIndex": self.camera_index.value(),
+            "sideCameraUrl": self.side_camera_url.text().strip(),
             "mockPi": self.mock_pi.isChecked(),
             "fakeEsp": self.fake_esp.isChecked(),
         }
@@ -124,3 +141,10 @@ class ConnectionPage(QWidget):
         self.pi_status.set_state("Pi connected" if pi else "Pi disconnected", "green" if pi else "red")
         self.esp_status.set_state("ESP connected" if esp else "ESP disconnected", "green" if esp else "red")
         self.camera_status.set_state("Camera connected" if camera else "Camera disconnected", "green" if camera else "red")
+
+    def update_side_camera_status(self, connected: bool | None, message: str | None = None) -> None:
+        if connected is None:
+            self.side_camera_status.set_state(message or "Side camera not tested", "yellow")
+            return
+        default = "Side camera connected" if connected else "Side camera disconnected"
+        self.side_camera_status.set_state(message or default, "green" if connected else "red")

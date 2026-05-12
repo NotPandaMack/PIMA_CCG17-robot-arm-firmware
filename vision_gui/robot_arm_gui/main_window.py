@@ -78,9 +78,11 @@ class MainWindow(QMainWindow):
         self.pi_connected = False
         self.esp_connected = False
         self.webcam_connected = False
+        self.side_camera_connected = False
         self.pi_tested = False
         self.esp_tested = False
         self.webcam_tested = False
+        self.side_camera_tested = False
         self.last_esp_status: dict[str, Any] | None = None
         self.last_detection: DetectionResult | None = None
         self.last_robot_xy: tuple[float, float] | None = None
@@ -246,6 +248,7 @@ class MainWindow(QMainWindow):
         self.connection_page.test_pi_requested.connect(self.test_pi_connection)
         self.connection_page.test_esp_requested.connect(self.test_esp_connection)
         self.connection_page.test_camera_requested.connect(self.test_webcam)
+        self.connection_page.test_side_camera_requested.connect(self.test_side_camera)
         self.connection_page.auto_detect_requested.connect(self.auto_detect_pi)
         self.connection_page.start_setup_requested.connect(lambda: self.go_to("setup"))
 
@@ -294,6 +297,7 @@ class MainWindow(QMainWindow):
         self.camera_page.continuous.setChecked(bool(self.settings.get("continuousSend", False)))
         self.camera_page.rate.setValue(int(float(self.settings.get("sendRateHz", 5.0))))
         self.test_page.set_dry_run(bool(self.settings.get("movementAdapterDryRun", True)))
+        self.calibration_page.set_side_camera_url(str(self.settings.get("sideCameraUrl", "")))
 
     def _start_nonblocking_timers(self) -> None:
         self.auto_pick_timer = QTimer(self)
@@ -361,6 +365,7 @@ class MainWindow(QMainWindow):
         patch["piUrl"] = normalize_http_url(patch["piUrl"], with_port=True)
         patch["websiteUrl"] = normalize_http_url(patch["websiteUrl"], with_port=True)
         patch["espUrl"] = normalize_http_url(patch["espUrl"], with_port=False)
+        patch["sideCameraUrl"] = str(patch.get("sideCameraUrl", "")).strip()
         self.settings.update(patch)
         self.pi_client.set_base_url(self.settings["piUrl"])
         self.pi_client.set_mock(bool(self.settings.get("mockPi")))
@@ -447,6 +452,53 @@ class MainWindow(QMainWindow):
                 cap.release()
 
         self._run_background(task, lambda result: self._on_webcam_test_result(index, result), "Webcam test failed", self._on_webcam_offline)
+
+    def test_side_camera(self) -> None:
+        self.save_setup_settings()
+        self.side_camera_tested = True
+        stream_url = str(self.settings.get("sideCameraUrl", "")).strip()
+        if not stream_url:
+            self.side_camera_connected = False
+            self.connection_page.update_side_camera_status(False, "Side camera URL missing")
+            self.log("Side camera test blocked: enter the iPhone IP-camera URL.")
+            self.update_ui_state()
+            return
+        self.connection_page.update_side_camera_status(None, "Side camera testing")
+        self.log("Testing iPhone side camera in the background.")
+
+        def task() -> dict[str, Any]:
+            import cv2
+
+            cap = cv2.VideoCapture(stream_url)
+            try:
+                ok = cap.isOpened()
+                frame_size = None
+                if ok:
+                    frame_ok, frame = cap.read()
+                    ok = bool(frame_ok)
+                    if frame_ok:
+                        frame_size = (frame.shape[1], frame.shape[0])
+                return {"ok": ok, "frameSize": frame_size}
+            finally:
+                cap.release()
+
+        self._run_background(task, self._on_side_camera_test_result, "Side camera test failed", self._on_side_camera_offline)
+
+    def _on_side_camera_offline(self, _message: str) -> None:
+        self.side_camera_connected = False
+        self.connection_page.update_side_camera_status(False)
+        self.update_ui_state()
+
+    def _on_side_camera_test_result(self, result: dict[str, Any]) -> None:
+        self.side_camera_connected = bool(result.get("ok"))
+        frame_size = result.get("frameSize")
+        if self.side_camera_connected and frame_size:
+            message = f"Side camera connected ({frame_size[0]}x{frame_size[1]})"
+        else:
+            message = "Side camera failed to open"
+        self.connection_page.update_side_camera_status(self.side_camera_connected, message)
+        self.log(message)
+        self.update_ui_state()
 
     def _on_webcam_offline(self, _message: str) -> None:
         self.webcam_connected = False
@@ -565,8 +617,13 @@ class MainWindow(QMainWindow):
             self.log("Side camera already running.")
             return
         if not stream_url:
+            stream_url = str(self.settings.get("sideCameraUrl", "")).strip()
+        if not stream_url:
             self.log("Side camera blocked: enter the iPhone IP-camera stream URL.")
             return
+        self.settings["sideCameraUrl"] = stream_url
+        save_settings(self.settings)
+        self.connection_page.side_camera_url.setText(stream_url)
         from .side_camera_worker import SideCameraWorker
 
         self.side_camera_worker = SideCameraWorker(stream_url)
@@ -584,7 +641,10 @@ class MainWindow(QMainWindow):
         self.log("Side camera stopped.")
 
     def on_side_camera_status(self, online: bool, message: str) -> None:
+        self.side_camera_connected = online
+        self.side_camera_tested = True
         self.calibration_page.set_side_camera_status(message)
+        self.connection_page.update_side_camera_status(online, message)
         if not online and "stopped" not in message.lower():
             self.log(message)
 
@@ -1233,6 +1293,8 @@ class MainWindow(QMainWindow):
         self.setup_checklist.update_state(state)
         self.health_checklist.update_state(state)
         self.connection_page.update_statuses(state.pi_connected, state.esp_connected, state.webcam_connected)
+        if not self.side_camera_tested and not self.side_camera_connected:
+            self.connection_page.update_side_camera_status(None, "Side camera not tested")
         self.test_page.update_status(self.last_esp_status)
         self.test_page.set_motion_button_enabled(False)
         self.preview_button.setEnabled(state.target_valid and calibrated)

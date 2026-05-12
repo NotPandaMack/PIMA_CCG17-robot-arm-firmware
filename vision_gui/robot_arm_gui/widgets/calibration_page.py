@@ -375,6 +375,10 @@ class CalibrationPage(QWidget):
     def set_side_camera_status(self, text: str) -> None:
         self.side_camera_status.setText(text)
 
+    def set_side_camera_url(self, stream_url: str) -> None:
+        if hasattr(self, "side_stream_url") and not self.side_stream_url.text().strip():
+            self.side_stream_url.setText(stream_url)
+
     def table_z(self) -> dict:
         if self.side_fit and self.side_fit.get("method") == "side_view_visual_fit":
             return self.side_fit
