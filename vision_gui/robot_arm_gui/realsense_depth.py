@@ -41,7 +41,7 @@ def fit_table_plane_from_depth(
     *,
     depth_image: Any,
     intrinsics: dict[str, float],
-    marker_points: list[dict[str, Any]],
+    marker_points: list[dict[str, Any]] | None = None,
     depth_scale: float = 0.001,
     stride: int = 8,
 ) -> dict[str, Any]:
@@ -50,10 +50,18 @@ def fit_table_plane_from_depth(
 
     if depth_image is None:
         raise ValueError("RealSense depth frame is missing")
-    if len(marker_points) < 4:
-        raise ValueError("four table markers are required before fitting the depth plane")
-    polygon = _marker_polygon(marker_points)
     height, width = depth_image.shape[:2]
+    if marker_points and len(marker_points) >= 4:
+        polygon = _marker_polygon(marker_points)
+    else:
+        margin_x = int(width * 0.15)
+        margin_y = int(height * 0.15)
+        polygon = [
+            (margin_x, margin_y),
+            (width - margin_x, margin_y),
+            (width - margin_x, height - margin_y),
+            (margin_x, height - margin_y),
+        ]
     mask = np.zeros((height, width), dtype=np.uint8)
     cv2.fillConvexPoly(mask, np.array(polygon, dtype=np.int32), 255)
 

@@ -29,11 +29,11 @@ from .camera_page import CameraView
 
 
 CALIBRATION_STEPS = [
-    ("D415 Placement", "Mount the RealSense D415 overhead so the full reachable table area, robot base, and all four marker locations are visible."),
-    ("Define Robot Origin", "Click the robot base center projected onto the table. This becomes robot coordinate X=0, Y=0."),
-    ("Four-Point Table Mapping", "Place each marker, enter its real robot/table X/Y coordinate in millimeters, then click it in the camera image."),
+    ("Camera Placement", "Use the overhead 2D webcam for the table view. It must see the whole table, the robot base, and all four ArUco papers. Use the angled D415 only for depth."),
+    ("Define Robot Origin", "In the Top 2D Webcam tab, click the center of the robot's rotating base one time. This becomes robot coordinate X=0, Y=0."),
+    ("Four-Point Table Mapping", "Keep the ArUco papers on the table in the 2D webcam view, then scan them. The 2D webcam handles X/Y mapping."),
     ("Workspace Bounds", "These safety limits stop the robot from accepting targets outside the reachable box."),
-    ("D415 Table Height Calibration", "Learn the table plane from overhead depth, then save three safe claw-height samples. The GUI never moves or lowers the arm."),
+    ("D415 Depth Calibration", "Use the angled D415 depth camera to learn the table plane and safe claw heights. The GUI never moves or lowers the arm."),
     ("Pickup Pose", "Use the website 2D IK simulator or Specific Joint Adjustment to make a good pickup pose, then save the current control/ESP pose and claw values."),
     ("Calibration Validation", "Click a table point. The app converts it to robot coordinates and can generate a hover preview."),
     ("Finish Calibration", "Save calibration locally and upload it to the Pi server."),
@@ -91,6 +91,7 @@ class CalibrationPage(QWidget):
         self.realsense_fit: dict | None = None
         self.depth_pending_tip: tuple[int, int] | None = None
         self.depth_metadata: dict | None = None
+        self._wizard_state: dict[str, bool] = {}
         self.claw_marker_hsv: dict | None = None
         self.claw_marker: dict | None = None
         self._side_table_clicks: list[tuple[int, int]] = []
@@ -110,10 +111,15 @@ class CalibrationPage(QWidget):
         self.progress.setRange(0, len(CALIBRATION_STEPS))
         self.grid_overlay = QCheckBox("Show calibration grid overlay")
         self.camera_view = CameraView()
+        self.depth_color_view = CameraView()
+        self.depth_color_view.setMinimumSize(860, 520)
+        self.depth_color_view.mapped_clicked.connect(lambda mapped: self.handle_depth_click(int(mapped["pixelX"]), int(mapped["pixelY"])))
         self.depth_view = CameraView()
         self.depth_view.setMinimumSize(860, 520)
+        self.depth_view.mapped_clicked.connect(lambda mapped: self.handle_depth_click(int(mapped["pixelX"]), int(mapped["pixelY"])))
         self.plane_view = CameraView()
         self.plane_view.setMinimumSize(860, 520)
+        self.plane_view.mapped_clicked.connect(lambda mapped: self.handle_depth_click(int(mapped["pixelX"]), int(mapped["pixelY"])))
         self.side_camera_view = CameraView()
         self.side_camera_view.setMinimumSize(860, 520)
         self.side_camera_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -125,17 +131,10 @@ class CalibrationPage(QWidget):
         top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.addWidget(self.grid_overlay)
         top_layout.addWidget(self.camera_view, 1)
-        side_tab = QWidget()
-        side_layout = QVBoxLayout(side_tab)
-        side_layout.setContentsMargins(0, 0, 0, 0)
-        side_hint = QLabel("Side camera preview. Use the Side View controls in the wizard panel to start DroidCam and choose click mode.")
-        side_hint.setWordWrap(True)
-        side_layout.addWidget(side_hint)
-        side_layout.addWidget(self.side_camera_view, 1)
-        self.preview_tabs.addTab(top_tab, "Top Camera")
+        self.preview_tabs.addTab(top_tab, "Top 2D Webcam")
+        self.preview_tabs.addTab(self.depth_color_view, "D415 Color")
         self.preview_tabs.addTab(self.depth_view, "Depth")
         self.preview_tabs.addTab(self.plane_view, "Table Plane")
-        self.preview_tabs.addTab(side_tab, "Side View")
 
         left_layout.addWidget(self.title)
         left_layout.addWidget(self.instructions)
@@ -200,12 +199,6 @@ class CalibrationPage(QWidget):
         self.step_changed.emit(self.step_index)
 
     def capture_click(self, x: int, y: int, debug: dict | None = None) -> None:
-        if hasattr(self, "depth_click_mode") and self.depth_click_mode.currentData() == "anchor" and self.step_index not in (1, 2, 6):
-            self.depth_pending_tip = (x, y)
-            self.depth_tip_status.setText(f"Pending D415 claw-tip click: {x}, {y}. Capture a high/medium/low sample next.")
-            self.camera_view.set_marker(x, y, "D415 claw tip")
-            self.update_wizard_status()
-            return
         if self.step_index == 1:
             self.origin_pixel = (x, y)
             self.origin_label.setText(f"Origin pixel: {x}, {y}")
@@ -227,11 +220,12 @@ class CalibrationPage(QWidget):
                 )
             else:
                 self.validation_label.setText(f"Clicked pixel: {x}, {y}")
-        elif hasattr(self, "depth_click_mode") and self.depth_click_mode.currentData() == "anchor":
-            self.depth_pending_tip = (x, y)
-            self.depth_tip_status.setText(f"Pending D415 claw-tip click: {x}, {y}. Capture a high/medium/low sample next.")
-            self.camera_view.set_marker(x, y, "D415 claw tip")
-            self.update_wizard_status()
+    def handle_depth_click(self, x: int, y: int) -> None:
+        self.depth_pending_tip = (x, y)
+        self.depth_tip_status.setText(f"Claw tip selected at D415 pixel {x}, {y}. Now press the matching Capture High/Medium/Low Depth Sample button.")
+        for view in (self.depth_color_view, self.depth_view, self.plane_view):
+            view.set_marker(x, y, "D415 claw tip")
+        self.update_wizard_status()
 
     def current_marker_label(self) -> str:
         return str(self.current_marker.currentData() or MAPPING_DEFAULTS[0][0])
@@ -657,7 +651,9 @@ class CalibrationPage(QWidget):
     def update_wizard_status(self, state: dict | None = None) -> None:
         if not hasattr(self, "wizard_status_labels"):
             return
-        state = state or {}
+        if state:
+            self._wizard_state.update({key: bool(value) for key, value in state.items()})
+        state = self._wizard_state
         values = {
             "top_camera": bool(state.get("top_camera")),
             "depth": bool(self.depth_metadata) or bool(state.get("depth")),
@@ -670,9 +666,9 @@ class CalibrationPage(QWidget):
             "saved": bool(state.get("saved")),
         }
         labels = {
-            "top_camera": "D415 color ready",
+            "top_camera": "2D webcam ready",
             "depth": "D415 depth ready",
-            "top_markers": "Top markers detected",
+            "top_markers": "ArUco X/Y markers detected",
             "origin": "Robot base clicked",
             "plane": "Table plane learned",
             "anchors": "Depth anchors saved",
@@ -686,12 +682,12 @@ class CalibrationPage(QWidget):
 
     def _wizard_next_action(self, values: dict[str, bool]) -> str:
         for key, text in [
-            ("top_camera", "Start Auto Calibration to start the D415 overhead camera."),
-            ("depth", "Connect the D415 over USB 3 and wait for depth frames."),
-            ("top_markers", "Place FL, FR, BL, BR markers in view; the wizard will scan them."),
-            ("origin", "Click the center of the robot's rotating base in the top camera view."),
-            ("plane", "Click Learn Table Plane after the table markers are detected."),
-            ("anchors", "Use the website to move to high, medium, and low safe positions; click the claw tip and capture each sample."),
+            ("top_camera", "Start Auto Calibration to start the overhead 2D webcam."),
+            ("depth", "Connect the angled D415 over USB 3 and wait for depth frames."),
+            ("top_markers", "Put the four ArUco papers flat on the table in the 2D webcam view, then scan top markers."),
+            ("origin", "In the Top 2D Webcam tab, click the exact center of the robot's rotating base."),
+            ("plane", "In the D415 views, make sure the desk surface fills most of the frame, then click Learn Table Plane."),
+            ("anchors", "Use the website to move the claw to high, medium, and low safe heights. In the D415 Color tab, click the visible claw tip and capture each sample."),
         ]:
             if not values[key]:
                 return text
@@ -705,13 +701,21 @@ class CalibrationPage(QWidget):
         layout = QVBoxLayout(page)
         title = QLabel("Auto Calibration Wizard")
         title.setObjectName("sectionTitle")
-        self.next_action = QLabel("Press Start Auto Calibration.")
+        self.next_action = QLabel("Press Start Auto Calibration. The 2D webcam handles ArUco X/Y. The angled D415 handles depth for claw/table height.")
         self.next_action.setWordWrap(True)
         self.start_auto_button = QPushButton("Start Auto Calibration")
         self.start_auto_button.setObjectName("primaryButton")
         self.start_auto_button.clicked.connect(self.start_auto_calibration_requested.emit)
         layout.addWidget(title)
         layout.addWidget(self.next_action)
+        intro = QLabel(
+            "Camera roles:\n"
+            "- Top 2D Webcam tab: use this for ArUco papers, robot origin, and X/Y object position.\n"
+            "- D415 Color/Depth/Table Plane tabs: use these only for depth, table height, and claw-tip samples.\n"
+            "The GUI will not move the robot. Move the arm only from the website controls."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
         layout.addWidget(self.start_auto_button)
 
         grid = QGridLayout()
@@ -746,16 +750,22 @@ class CalibrationPage(QWidget):
         self.depth_tip_status.setWordWrap(True)
         self.depth_fit_status = QLabel("Table height learned: no. Samples: 0 / 3 minimum.")
         self.depth_fit_status.setWordWrap(True)
-        self.depth_click_mode = QComboBox()
-        self.depth_click_mode.addItem("Click robot origin / validation", "normal")
-        self.depth_click_mode.addItem("Click claw tip for D415 depth sample", "anchor")
-        depth_layout.addWidget(QLabel("RealSense D415 Overhead Depth"))
+        d415_instructions = QLabel(
+            "D415 depth steps:\n"
+            "1. Aim the D415 down at an angle so it sees the desk surface and the claw.\n"
+            "2. Click Learn Table Plane while the claw is not blocking the desk.\n"
+            "3. Move the claw only from the website controls.\n"
+            "4. For high, medium, and low safe positions, click the claw tip in the D415 Color tab, then capture the sample.\n"
+            "Never touch the table during this calibration."
+        )
+        d415_instructions.setWordWrap(True)
+        depth_layout.addWidget(QLabel("RealSense D415 Angled Depth"))
+        depth_layout.addWidget(d415_instructions)
         depth_layout.addWidget(self.realsense_status)
         depth_layout.addWidget(self.depth_info_status)
         depth_layout.addWidget(self.depth_table_status)
         depth_layout.addWidget(self.depth_tip_status)
         depth_layout.addWidget(self.depth_fit_status)
-        depth_layout.addWidget(self.depth_click_mode)
         depth_sample_row = QHBoxLayout()
         for text in ("Capture High Depth Sample", "Capture Medium Depth Sample", "Capture Low Depth Sample"):
             button = QPushButton(text)
@@ -767,7 +777,7 @@ class CalibrationPage(QWidget):
         depth_layout.addWidget(self.depth_samples_status)
         layout.addWidget(depth_box)
 
-        self.side_fallback_toggle = QCheckBox("Show advanced side-camera fallback")
+        self.side_fallback_toggle = QCheckBox("Show deprecated side-camera fallback")
         layout.addWidget(self.side_fallback_toggle)
 
         stream_box = QFrame()
@@ -874,6 +884,13 @@ class CalibrationPage(QWidget):
         page = QWidget()
         layout = QVBoxLayout(page)
         self.camera_status_label = QLabel("Start the camera and confirm the table is visible.")
+        self.camera_status_label.setText(
+            "Physical setup:\n"
+            "1. Overhead 2D webcam: directly above the robot arm, looking straight down at the desk.\n"
+            "2. ArUco papers: flat on the table in the webcam view.\n"
+            "3. D415: high up and tilted down at an angle so it sees the desk surface and the claw.\n"
+            "4. Keep both cameras still after calibration starts."
+        )
         self.camera_status_label.setWordWrap(True)
         layout.addWidget(self.camera_status_label)
         layout.addStretch(1)
@@ -883,6 +900,12 @@ class CalibrationPage(QWidget):
         page = QWidget()
         layout = QVBoxLayout(page)
         self.origin_label = QLabel("Origin pixel: not selected")
+        origin_help = QLabel(
+            "Use the Top 2D Webcam tab. Click the center of the robot's rotating base once. "
+            "Do not click the claw, wrist, or object. This point anchors robot X=0, Y=0 for the webcam mapping."
+        )
+        origin_help.setWordWrap(True)
+        layout.addWidget(origin_help)
         layout.addWidget(self.origin_label)
         layout.addStretch(1)
         return page
@@ -904,6 +927,13 @@ class CalibrationPage(QWidget):
         layout.addLayout(action_row)
 
         self.mapping_help = QLabel("Place printed ArUco markers at FL/FR/BL/BR, then scan from the live camera.")
+        self.mapping_help.setText(
+            "Use the Top 2D Webcam tab for this step.\n"
+            "1. Put the four ArUco papers flat on the table.\n"
+            "2. Make sure the overhead webcam can see all four papers at once.\n"
+            "3. Click Scan Top Markers. The app fills the marker pixels and computes X/Y mapping.\n"
+            "4. Only use manual click fallback if a paper cannot be detected."
+        )
         self.mapping_help.setWordWrap(True)
         layout.addWidget(self.mapping_help)
 
@@ -959,6 +989,12 @@ class CalibrationPage(QWidget):
     def _workspace_step(self) -> QWidget:
         page = QWidget()
         form = QFormLayout(page)
+        intro = QLabel(
+            "Workspace bounds are robot safety limits in millimeters. Keep these conservative. "
+            "The robot will not accept autonomous pickup targets outside this box."
+        )
+        intro.setWordWrap(True)
+        form.addRow(intro)
         self.workspace_inputs = {}
         for key, value in DEFAULT_WORKSPACE.items():
             widget = self._double(float(value), -1000.0, 1000.0)

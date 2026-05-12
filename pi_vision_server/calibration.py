@@ -25,7 +25,7 @@ def empty_calibration() -> dict[str, Any]:
         "status": "not_calibrated",
         "createdAt": None,
         "zAxisInverted": True,
-        "camera": {"type": "realsense_d415", "width": None, "height": None},
+        "camera": {"type": "overhead_2d_webcam", "width": None, "height": None},
         "origin": None,
         "pickupPitchDeg": None,
         "homography": [],
