@@ -6,6 +6,14 @@ from typing import Any
 from PySide6.QtCore import QThread, Signal
 
 
+def open_side_camera_capture(stream_url: str) -> Any:
+    import cv2
+
+    if stream_url.startswith(("http://", "https://")) and hasattr(cv2, "CAP_FFMPEG"):
+        return cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
+    return cv2.VideoCapture(stream_url)
+
+
 class SideCameraWorker(QThread):
     frame_ready = Signal(object)
     camera_status = Signal(bool, str)
@@ -21,28 +29,44 @@ class SideCameraWorker(QThread):
         self.wait(1200)
 
     def run(self) -> None:
-        import cv2
-
         self._running = True
-        cap = cv2.VideoCapture(self.stream_url)
-        if not cap.isOpened():
-            self.camera_status.emit(False, "Unable to open side camera stream")
-            self._running = False
-            return
-
-        self.camera_status.emit(True, "Side camera running")
+        cap = None
+        consecutive_failures = 0
+        last_reconnect_notice = 0.0
         try:
             while self._running:
+                if cap is None or not cap.isOpened():
+                    if cap is not None:
+                        cap.release()
+                    cap = open_side_camera_capture(self.stream_url)
+                    if not cap.isOpened():
+                        now = time.monotonic()
+                        if now - last_reconnect_notice > 2.0:
+                            self.camera_status.emit(False, "Unable to open side camera stream; retrying")
+                            last_reconnect_notice = now
+                        time.sleep(0.5)
+                        continue
+                    consecutive_failures = 0
+                    self.camera_status.emit(True, "Side camera running")
+
                 ok, frame = cap.read()
                 if not ok:
-                    self.camera_status.emit(False, "Side camera read failed")
-                    time.sleep(0.15)
+                    consecutive_failures += 1
+                    if consecutive_failures >= 5:
+                        self.camera_status.emit(False, "Side camera read failed; reconnecting")
+                        cap.release()
+                        cap = None
+                        time.sleep(0.5)
+                    else:
+                        time.sleep(0.1)
                     continue
+                consecutive_failures = 0
                 self.frame_ready.emit(frame)
                 elapsed = time.monotonic() - self._last_frame_at
                 self._last_frame_at = time.monotonic()
                 if elapsed < 0.03:
                     time.sleep(0.03 - elapsed)
         finally:
-            cap.release()
+            if cap is not None:
+                cap.release()
             self.camera_status.emit(False, "Side camera stopped")

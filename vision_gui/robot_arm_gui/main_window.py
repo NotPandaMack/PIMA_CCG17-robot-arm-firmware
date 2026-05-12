@@ -456,6 +456,14 @@ class MainWindow(QMainWindow):
     def test_side_camera(self) -> None:
         self.save_setup_settings()
         self.side_camera_tested = True
+        if self.side_camera_worker and self.side_camera_worker.isRunning():
+            self.side_camera_connected = True
+            message = "Side camera is already running"
+            self.connection_page.update_side_camera_status(True, message)
+            self.calibration_page.set_side_camera_status(message)
+            self.log(message)
+            self.update_ui_state()
+            return
         stream_url = str(self.settings.get("sideCameraUrl", DEFAULT_SIDE_CAMERA_URL)).strip() or DEFAULT_SIDE_CAMERA_URL
         if not stream_url:
             self.side_camera_connected = False
@@ -468,9 +476,9 @@ class MainWindow(QMainWindow):
         self.log(f"Testing side camera at {stream_url}")
 
         def task() -> dict[str, Any]:
-            import cv2
+            from .side_camera_worker import open_side_camera_capture
 
-            cap = cv2.VideoCapture(stream_url)
+            cap = open_side_camera_capture(stream_url)
             try:
                 ok = cap.isOpened()
                 frame_size = None
