@@ -34,6 +34,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "espUrl": "http://ESP8266_IP",
     "cameraIndex": 0,
     "sideCameraUrl": "",
+    "sideCameraWhipPort": 8899,
     "motionEnabled": False,
     "continuousSend": False,
     "sendRateHz": 5.0,
@@ -67,6 +68,7 @@ def load_settings(path: Path = SETTINGS_PATH) -> dict[str, Any]:
     settings["espUrl"] = normalize_http_url(settings.get("espUrl", DEFAULT_SETTINGS["espUrl"]), with_port=False)
     settings["cameraIndex"] = int(settings.get("cameraIndex", 0))
     settings["sideCameraUrl"] = str(settings.get("sideCameraUrl", "")).strip()
+    settings["sideCameraWhipPort"] = int(settings.get("sideCameraWhipPort", 8899))
     return settings
 
 

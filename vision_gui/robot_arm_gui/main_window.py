@@ -94,12 +94,14 @@ class MainWindow(QMainWindow):
         self.last_send_at = 0.0
         self.camera_worker: Any | None = None
         self.side_camera_worker: Any | None = None
+        self.whip_receiver: Any | None = None
 
         self._build_ui()
         self._connect_signals()
         self._apply_settings_to_ui()
         self._apply_style()
         self._start_nonblocking_timers()
+        self.start_webrtc_side_receiver()
         self.go_to("setup")
         self.update_ui_state()
         QTimer.singleShot(0, self._load_startup_files_async)
@@ -111,6 +113,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: Any) -> None:
         self.stop_camera()
         self.stop_side_camera()
+        self.stop_webrtc_side_receiver()
         self.settings["lastPage"] = self.current_page_name()
         save_settings(self.settings)
         super().closeEvent(event)
@@ -460,27 +463,18 @@ class MainWindow(QMainWindow):
         if not stream_url:
             self.side_camera_connected = False
             self.connection_page.update_side_camera_status(False, "Side camera URL missing")
-            self.log("Side camera test blocked: enter the iPhone IP-camera URL.")
+            self.log("Side camera test blocked: WebRTC receiver URL is missing.")
             self.update_ui_state()
             return
         self.connection_page.update_side_camera_status(None, "Side camera testing")
-        self.log("Testing iPhone side camera in the background.")
+        self.log("Testing local WebRTC receiver in the background.")
 
         def task() -> dict[str, Any]:
-            import cv2
+            import urllib.request
 
-            cap = cv2.VideoCapture(stream_url)
-            try:
-                ok = cap.isOpened()
-                frame_size = None
-                if ok:
-                    frame_ok, frame = cap.read()
-                    ok = bool(frame_ok)
-                    if frame_ok:
-                        frame_size = (frame.shape[1], frame.shape[0])
-                return {"ok": ok, "frameSize": frame_size}
-            finally:
-                cap.release()
+            request = urllib.request.Request(stream_url, method="OPTIONS")
+            with urllib.request.urlopen(request, timeout=2.0) as response:
+                return {"ok": response.status in {200, 204, 405}, "status": response.status}
 
         self._run_background(task, self._on_side_camera_test_result, "Side camera test failed", self._on_side_camera_offline)
 
@@ -491,11 +485,10 @@ class MainWindow(QMainWindow):
 
     def _on_side_camera_test_result(self, result: dict[str, Any]) -> None:
         self.side_camera_connected = bool(result.get("ok"))
-        frame_size = result.get("frameSize")
-        if self.side_camera_connected and frame_size:
-            message = f"Side camera connected ({frame_size[0]}x{frame_size[1]})"
+        if self.side_camera_connected:
+            message = "WebRTC receiver ready; paste the URL into Larix"
         else:
-            message = "Side camera failed to open"
+            message = "WebRTC receiver did not respond"
         self.connection_page.update_side_camera_status(self.side_camera_connected, message)
         self.log(message)
         self.update_ui_state()
@@ -613,6 +606,15 @@ class MainWindow(QMainWindow):
         self.update_ui_state()
 
     def start_side_camera(self, stream_url: str) -> None:
+        if stream_url.startswith(("http://", "https://")) and "/whip/" in stream_url:
+            self.settings["sideCameraUrl"] = stream_url
+            save_settings(self.settings)
+            self.connection_page.side_camera_url.setText(stream_url)
+            self.calibration_page.set_side_camera_url(stream_url)
+            self.calibration_page.set_side_camera_status("Waiting for Larix to start streaming to the WebRTC URL.")
+            self.connection_page.update_side_camera_status(True, "WebRTC receiver ready")
+            self.log("Side-view WebRTC receiver is ready. Start streaming from Larix.")
+            return
         if self.side_camera_worker and self.side_camera_worker.isRunning():
             self.log("Side camera already running.")
             return
@@ -653,6 +655,30 @@ class MainWindow(QMainWindow):
         self.last_side_frame = frame.copy()
         image = QImage(frame.data, w, h, frame.strides[0], QImage.Format_BGR888).copy()
         self.calibration_page.side_camera_view.set_frame(QPixmap.fromImage(image), (w, h))
+
+    def start_webrtc_side_receiver(self) -> None:
+        if self.whip_receiver and self.whip_receiver.isRunning():
+            return
+        from .webrtc_side_receiver import WhipSideCameraReceiver
+
+        port = int(self.settings.get("sideCameraWhipPort", 8899))
+        self.whip_receiver = WhipSideCameraReceiver(port=port)
+        self.whip_receiver.ingest_url_ready.connect(self.on_webrtc_ingest_url_ready)
+        self.whip_receiver.camera_status.connect(self.on_side_camera_status)
+        self.whip_receiver.frame_ready.connect(self.on_side_camera_frame)
+        self.whip_receiver.start()
+
+    def stop_webrtc_side_receiver(self) -> None:
+        if self.whip_receiver:
+            self.whip_receiver.stop()
+            self.whip_receiver = None
+
+    def on_webrtc_ingest_url_ready(self, ingest_url: str) -> None:
+        self.settings["sideCameraUrl"] = ingest_url
+        save_settings(self.settings)
+        self.connection_page.side_camera_url.setText(ingest_url)
+        self.calibration_page.set_side_camera_url(ingest_url)
+        self.log(f"Larix WebRTC URL ready: {ingest_url}")
 
     def on_camera_status(self, online: bool, message: str) -> None:
         self.webcam_tested = True

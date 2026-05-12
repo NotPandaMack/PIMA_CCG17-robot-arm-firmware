@@ -3,3 +3,5 @@ opencv-contrib-python>=4.9
 requests>=2.31
 numpy>=1.26
 qrcode[pil]>=7.4
+aiohttp>=3.9
+aiortc>=1.9
