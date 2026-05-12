@@ -44,7 +44,7 @@ from .calibration_markers import (
     generate_aruco_marker_sheet,
     generate_qr_marker_sheet,
 )
-from .config import DEFAULT_HSV_PROFILE, DEFAULT_SETTINGS, load_settings, normalize_http_url, save_settings
+from .config import DEFAULT_HSV_PROFILE, DEFAULT_SETTINGS, DEFAULT_SIDE_CAMERA_URL, load_settings, normalize_http_url, save_settings
 from .detection_worker import DetectionResult, HSVProfile
 from .esp_client import EspClient
 from .pi_client import PiClient
@@ -60,14 +60,6 @@ from .widgets.test_page import TestPage
 
 
 logger = logging.getLogger(__name__)
-
-
-def _split_rtmp_ingest_url(ingest_url: str) -> tuple[str, str]:
-    server_url, _slash, stream_key = ingest_url.rstrip("/").rpartition("/")
-    if not server_url or not stream_key:
-        return ingest_url, "side"
-    return server_url, stream_key
-
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
@@ -101,15 +93,12 @@ class MainWindow(QMainWindow):
         self.last_send_at = 0.0
         self.camera_worker: Any | None = None
         self.side_camera_worker: Any | None = None
-        self.rtmp_relay: Any | None = None
-        self.side_capture_url = ""
 
         self._build_ui()
         self._connect_signals()
         self._apply_settings_to_ui()
         self._apply_style()
         self._start_nonblocking_timers()
-        self.start_rtmp_side_relay()
         self.go_to("setup")
         self.update_ui_state()
         QTimer.singleShot(0, self._load_startup_files_async)
@@ -121,7 +110,6 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: Any) -> None:
         self.stop_camera()
         self.stop_side_camera()
-        self.stop_rtmp_side_relay()
         self.settings["lastPage"] = self.current_page_name()
         save_settings(self.settings)
         super().closeEvent(event)
@@ -308,7 +296,7 @@ class MainWindow(QMainWindow):
         self.camera_page.continuous.setChecked(bool(self.settings.get("continuousSend", False)))
         self.camera_page.rate.setValue(int(float(self.settings.get("sendRateHz", 5.0))))
         self.test_page.set_dry_run(bool(self.settings.get("movementAdapterDryRun", True)))
-        self.calibration_page.set_side_camera_url(str(self.settings.get("sideCameraUrl", "")))
+        self.calibration_page.set_side_camera_url(str(self.settings.get("sideCameraUrl", DEFAULT_SIDE_CAMERA_URL)))
 
     def _start_nonblocking_timers(self) -> None:
         self.auto_pick_timer = QTimer(self)
@@ -376,8 +364,7 @@ class MainWindow(QMainWindow):
         patch["piUrl"] = normalize_http_url(patch["piUrl"], with_port=True)
         patch["websiteUrl"] = normalize_http_url(patch["websiteUrl"], with_port=True)
         patch["espUrl"] = normalize_http_url(patch["espUrl"], with_port=False)
-        patch["sideCameraUrl"] = str(patch.get("sideCameraUrl", "")).strip()
-        patch["sideCameraStreamKey"] = str(patch.get("sideCameraStreamKey", "side")).strip() or "side"
+        patch["sideCameraUrl"] = str(patch.get("sideCameraUrl", DEFAULT_SIDE_CAMERA_URL)).strip() or DEFAULT_SIDE_CAMERA_URL
         self.settings.update(patch)
         self.pi_client.set_base_url(self.settings["piUrl"])
         self.pi_client.set_mock(bool(self.settings.get("mockPi")))
@@ -386,6 +373,7 @@ class MainWindow(QMainWindow):
         save_settings(self.settings)
         self.log("Settings saved.")
         self.connection_page.set_from_settings(self.settings)
+        self.calibration_page.set_side_camera_url(self.settings["sideCameraUrl"])
         self.update_ui_state()
 
     def test_pi_connection(self) -> None:
@@ -468,23 +456,40 @@ class MainWindow(QMainWindow):
     def test_side_camera(self) -> None:
         self.save_setup_settings()
         self.side_camera_tested = True
-        stream_url = str(self.settings.get("sideCameraUrl", "")).strip()
+        stream_url = str(self.settings.get("sideCameraUrl", DEFAULT_SIDE_CAMERA_URL)).strip() or DEFAULT_SIDE_CAMERA_URL
         if not stream_url:
             self.side_camera_connected = False
             self.connection_page.update_side_camera_status(False, "Side camera URL missing")
-            self.log("Side camera test blocked: Camo RTMP server URL is missing.")
+            self.log("Side camera test blocked: side camera URL is missing.")
             self.update_ui_state()
             return
-        ready = bool(self.rtmp_relay and self.rtmp_relay.isRunning())
-        self.side_camera_connected = ready
-        message = "RTMP relay ready; use the server URL and stream key in Camo Studio" if ready else "RTMP relay is not running"
-        self.connection_page.update_side_camera_status(ready, message)
-        self.log(message)
+        self.connection_page.update_side_camera_status(None, f"Testing side camera at {stream_url}")
+        self.calibration_page.set_side_camera_status(f"Testing side camera at {stream_url}")
+        self.log(f"Testing side camera at {stream_url}")
+
+        def task() -> dict[str, Any]:
+            import cv2
+
+            cap = cv2.VideoCapture(stream_url)
+            try:
+                ok = cap.isOpened()
+                frame_size = None
+                if ok:
+                    frame_ok, frame = cap.read()
+                    ok = bool(frame_ok)
+                    if frame_ok:
+                        frame_size = (frame.shape[1], frame.shape[0])
+                return {"ok": ok, "frameSize": frame_size}
+            finally:
+                cap.release()
+
+        self._run_background(task, self._on_side_camera_test_result, "Side camera test failed", self._on_side_camera_offline)
         self.update_ui_state()
 
     def _on_side_camera_offline(self, _message: str) -> None:
         self.side_camera_connected = False
         self.connection_page.update_side_camera_status(False)
+        self.calibration_page.set_side_camera_status("Side camera disconnected.")
         self.update_ui_state()
 
     def _on_side_camera_test_result(self, result: dict[str, Any]) -> None:
@@ -495,6 +500,7 @@ class MainWindow(QMainWindow):
         else:
             message = "Side camera failed to open"
         self.connection_page.update_side_camera_status(self.side_camera_connected, message)
+        self.calibration_page.set_side_camera_status(message)
         self.log(message)
         self.update_ui_state()
 
@@ -611,28 +617,18 @@ class MainWindow(QMainWindow):
         self.update_ui_state()
 
     def start_side_camera(self, stream_url: str) -> None:
-        if stream_url.startswith("rtmp://"):
-            self.settings["sideCameraUrl"] = stream_url
-            save_settings(self.settings)
-            self.connection_page.side_camera_url.setText(stream_url)
-            self.calibration_page.set_side_camera_url(stream_url)
-            stream_url = self.side_capture_url
-            if not stream_url:
-                self.log("Side camera blocked: RTMP relay capture URL is not ready.")
-                return
-            self.calibration_page.set_side_camera_status("Waiting for Camo Studio to stream to the RTMP URL.")
-            self.connection_page.update_side_camera_status(True, "RTMP relay ready")
         if self.side_camera_worker and self.side_camera_worker.isRunning():
             self.log("Side camera already running.")
             return
         if not stream_url:
-            stream_url = str(self.settings.get("sideCameraUrl", "")).strip()
+            stream_url = str(self.settings.get("sideCameraUrl", DEFAULT_SIDE_CAMERA_URL)).strip() or DEFAULT_SIDE_CAMERA_URL
         if not stream_url:
-            self.log("Side camera blocked: enter the iPhone IP-camera stream URL.")
+            self.log("Side camera blocked: enter the DroidCam stream URL.")
             return
         self.settings["sideCameraUrl"] = stream_url
         save_settings(self.settings)
         self.connection_page.side_camera_url.setText(stream_url)
+        self.calibration_page.set_side_camera_url(stream_url)
         from .side_camera_worker import SideCameraWorker
 
         self.side_camera_worker = SideCameraWorker(stream_url)
@@ -662,37 +658,6 @@ class MainWindow(QMainWindow):
         self.last_side_frame = frame.copy()
         image = QImage(frame.data, w, h, frame.strides[0], QImage.Format_BGR888).copy()
         self.calibration_page.side_camera_view.set_frame(QPixmap.fromImage(image), (w, h))
-
-    def start_rtmp_side_relay(self) -> None:
-        if self.rtmp_relay and self.rtmp_relay.isRunning():
-            return
-        from .rtmp_side_receiver import RtmpSideCameraRelay
-
-        rtmp_port = int(self.settings.get("sideCameraRtmpPort", 1936))
-        mjpeg_port = int(self.settings.get("sideCameraMjpegPort", 8090))
-        stream_key = str(self.settings.get("sideCameraStreamKey", "side")).strip() or "side"
-        self.rtmp_relay = RtmpSideCameraRelay(rtmp_port=rtmp_port, mjpeg_port=mjpeg_port, stream_key=stream_key)
-        self.rtmp_relay.ingest_url_ready.connect(self.on_rtmp_ingest_url_ready)
-        self.rtmp_relay.capture_url_ready.connect(self.on_rtmp_capture_url_ready)
-        self.rtmp_relay.relay_status.connect(self.on_side_camera_status)
-        self.rtmp_relay.start()
-
-    def stop_rtmp_side_relay(self) -> None:
-        if self.rtmp_relay:
-            self.rtmp_relay.stop()
-            self.rtmp_relay = None
-
-    def on_rtmp_ingest_url_ready(self, ingest_url: str) -> None:
-        server_url, stream_key = _split_rtmp_ingest_url(ingest_url)
-        self.settings["sideCameraUrl"] = server_url
-        self.settings["sideCameraStreamKey"] = stream_key
-        save_settings(self.settings)
-        self.connection_page.set_side_camera_rtmp_details(server_url, stream_key)
-        self.calibration_page.set_side_camera_url(ingest_url)
-        self.log(f"Camo RTMP server ready: {server_url} stream key: {stream_key}")
-
-    def on_rtmp_capture_url_ready(self, capture_url: str) -> None:
-        self.side_capture_url = capture_url
 
     def on_camera_status(self, online: bool, message: str) -> None:
         self.webcam_tested = True

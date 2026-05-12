@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 
 from ..calibration_markers import MARKER_DEFINITIONS, mapping_warnings
 from ..calibration_manager import fit_side_view_table_z
-from ..config import DEFAULT_WORKSPACE
+from ..config import DEFAULT_SIDE_CAMERA_URL, DEFAULT_WORKSPACE
 from .camera_page import CameraView
 
 
@@ -31,7 +31,7 @@ CALIBRATION_STEPS = [
     ("Define Robot Origin", "Click the robot base center projected onto the table. This becomes robot coordinate X=0, Y=0."),
     ("Four-Point Table Mapping", "Place each marker, enter its real robot/table X/Y coordinate in millimeters, then click it in the camera image."),
     ("Workspace Bounds", "These safety limits stop the robot from accepting targets outside the reachable box."),
-    ("Side-View Table Z Calibration", "Display the monitor board full-screen behind the robot, start the iPhone side camera, set the table line, then save safe visual claw-height samples. The GUI never moves or lowers the arm."),
+    ("Side-View Table Z Calibration", "Display the monitor board full-screen behind the robot, start the DroidCam side camera, set the table line, then save safe visual claw-height samples. The GUI never moves or lowers the arm."),
     ("Pickup Pose", "Use the website 2D IK simulator or Specific Joint Adjustment to make a good pickup pose, then save the current control/ESP pose and claw values."),
     ("Calibration Validation", "Click a table point. The app converts it to robot coordinates and can generate a hover preview."),
     ("Finish Calibration", "Save calibration locally and upload it to the Pi server."),
@@ -383,7 +383,7 @@ class CalibrationPage(QWidget):
         self.side_camera_status.setText(text)
 
     def set_side_camera_url(self, stream_url: str) -> None:
-        if hasattr(self, "side_stream_url") and not self.side_stream_url.text().strip():
+        if hasattr(self, "side_stream_url"):
             self.side_stream_url.setText(stream_url)
 
     def table_z(self) -> dict:
@@ -545,7 +545,7 @@ class CalibrationPage(QWidget):
         layout.setColumnStretch(0, 3)
         layout.setColumnStretch(1, 2)
         layout.setRowStretch(1, 1)
-        intro = QLabel("Open the website on the monitor as ?mode=side-calibration-board and put it full screen behind the robot. Move only from the trusted website controls, then record visual claw-tip samples here.")
+        intro = QLabel("Open the website on the monitor as ?mode=side-calibration-board and put it full screen behind the robot. Start the DroidCam side feed, move only from the trusted website controls, then record visual claw-tip samples here.")
         intro.setWordWrap(True)
         layout.addWidget(intro, 0, 0, 1, 2)
 
@@ -553,10 +553,9 @@ class CalibrationPage(QWidget):
         stream_box.setObjectName("subPanel")
         stream_layout = QVBoxLayout(stream_box)
         self.side_stream_url = QLineEdit()
-        self.side_stream_url.setPlaceholderText("Camo RTMP ingest URL")
-        self.side_stream_url.setReadOnly(True)
+        self.side_stream_url.setPlaceholderText(DEFAULT_SIDE_CAMERA_URL)
         button_row = QHBoxLayout()
-        start_button = QPushButton("Use Camo Side Camera")
+        start_button = QPushButton("Use Side Camera")
         stop_button = QPushButton("Stop Side Camera")
         detect_button = QPushButton("Detect Board")
         start_button.clicked.connect(lambda: self.start_side_camera_requested.emit(self.side_stream_url.text().strip()))
@@ -567,7 +566,7 @@ class CalibrationPage(QWidget):
         button_row.addWidget(detect_button)
         self.side_camera_status = QLabel("Side camera stopped.")
         self.side_camera_status.setWordWrap(True)
-        stream_layout.addWidget(QLabel("Side View / Camo iPhone Camera"))
+        stream_layout.addWidget(QLabel("Side View / DroidCam Camera"))
         stream_layout.addWidget(self.side_stream_url)
         stream_layout.addLayout(button_row)
         stream_layout.addWidget(self.side_camera_status)

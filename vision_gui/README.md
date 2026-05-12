@@ -34,16 +34,15 @@ python app.py
 3. Enter the ESP URL, for example `http://192.168.1.60`.
 4. Select the webcam index, usually `0`.
 5. Use Test Pi Connection, Test ESP Connection, and Test Webcam.
-6. Copy the Camo RTMP server URL shown on Setup into Camo Studio as the streaming address.
-7. Copy the Camo stream key shown on Setup into Camo Studio as the stream key.
-8. Use Test RTMP Relay to confirm the DesktopGUI receiver is listening.
-9. Save Settings.
+6. Enter the DroidCam side camera URL shown on Setup, for example `http://192.168.1.149:4747/video`.
+7. Use Test Side Camera to confirm the stream opens in the DesktopGUI.
+8. Save Settings.
 
 Use Mock Pi and Fake ESP modes to test the workflow without hardware.
 
 The app starts in a startup-safe mode: it does not automatically probe the Pi, ESP, webcam, config, or calibration during window creation. Status begins as Not tested, and hardware checks only run after you press a test button.
 
-The DesktopGUI starts a local RTMP receiver for Camo Studio and relays it into the side-view preview. Use the Camo RTMP server URL shown on Setup, for example `rtmp://MAIN_LINUX_PC_IP:1936/live`, with stream key `side`.
+The DesktopGUI uses the direct DroidCam MJPEG stream for side-view preview. Use the DroidCam URL shown on Setup, for example `http://192.168.1.149:4747/video`.
 
 ## Beginner Setup Checklist
 
@@ -72,7 +71,7 @@ Full pickup stays locked until hover-only real movement has passed and you confi
 4. Define Robot Origin: click the robot base center projected onto the table.
 5. Four-Point Table Mapping: generate and print the ArUco marker sheet, place IDs 0-3 at FL/FR/BL/BR, then scan markers from the camera to auto-fill pixel centers and robot X/Y coordinates. If ArUco is unavailable, use the QR fallback sheet. Manual click placement is still available behind the manual fallback checkbox.
 6. Workspace Bounds: save the safety limits.
-7. Side-View Table Z Calibration: open the monitor board full-screen on the MacBook, start Camo Studio streaming to the DesktopGUI RTMP URL, then set the table line and save safe claw-height samples. The GUI never lowers the arm automatically.
+7. Side-View Table Z Calibration: open the monitor board full-screen on the MacBook, start DroidCam on the iPhone, then set the table line and save safe claw-height samples. The GUI never lowers the arm automatically.
 8. Pickup Pose: manually move to a safe pickup pose and save the current ESP pose.
 9. Validation: click a point and generate a hover preview.
 10. Finish Calibration to save `config/vision_calibration.json` and upload it to the Pi.

@@ -20,6 +20,8 @@ DEFAULT_WORKSPACE = {
     "zMax": 220.0,
 }
 
+DEFAULT_SIDE_CAMERA_URL = "http://192.168.1.149:4747/video"
+
 DEFAULT_HSV_PROFILE = {
     "lowerHue": 40,
     "upperHue": 85,
@@ -33,10 +35,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "websiteUrl": "http://raspberrypi.local:8000",
     "espUrl": "http://ESP8266_IP",
     "cameraIndex": 0,
-    "sideCameraUrl": "",
-    "sideCameraStreamKey": "side",
-    "sideCameraRtmpPort": 1936,
-    "sideCameraMjpegPort": 8090,
+    "sideCameraUrl": DEFAULT_SIDE_CAMERA_URL,
     "motionEnabled": False,
     "continuousSend": False,
     "sendRateHz": 5.0,
@@ -69,10 +68,9 @@ def load_settings(path: Path = SETTINGS_PATH) -> dict[str, Any]:
     settings["websiteUrl"] = normalize_http_url(settings.get("websiteUrl", settings["piUrl"]), with_port=True)
     settings["espUrl"] = normalize_http_url(settings.get("espUrl", DEFAULT_SETTINGS["espUrl"]), with_port=False)
     settings["cameraIndex"] = int(settings.get("cameraIndex", 0))
-    settings["sideCameraUrl"] = str(settings.get("sideCameraUrl", "")).strip()
-    settings["sideCameraStreamKey"] = str(settings.get("sideCameraStreamKey", "side")).strip() or "side"
-    settings["sideCameraRtmpPort"] = int(settings.get("sideCameraRtmpPort", settings.get("sideCameraRtmpsPort", 1936)))
-    settings["sideCameraMjpegPort"] = int(settings.get("sideCameraMjpegPort", 8090))
+    settings["sideCameraUrl"] = str(settings.get("sideCameraUrl", DEFAULT_SIDE_CAMERA_URL)).strip() or DEFAULT_SIDE_CAMERA_URL
+    for legacy_key in ("sideCameraStreamKey", "sideCameraRtmpPort", "sideCameraMjpegPort", "sideCameraRtmpsPort"):
+        settings.pop(legacy_key, None)
     return settings
 
 
