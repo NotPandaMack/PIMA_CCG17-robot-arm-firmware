@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from PySide6.QtCore import QRunnable, QThreadPool, QTimer, Slot
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -45,28 +45,32 @@ def _save_settings(s: dict[str, Any]) -> None:
     _SETTINGS_PATH.write_text(json.dumps(s, indent=2))
 
 
+class _Relay(QObject):
+    """Carries results from worker threads back to the main thread via Qt signals."""
+    done = Signal(object)
+    error = Signal(str)
+
+
 class _Task(QRunnable):
-    """Fire-and-forget background task. Calls fn(), then on_done(result) on the main thread."""
+    """Fire-and-forget background task. Uses Qt signals for thread-safe UI callbacks."""
 
     def __init__(self, fn, on_done=None, on_error=None) -> None:
         super().__init__()
         self._fn = fn
-        self._on_done = on_done
-        self._on_error = on_error
+        self._relay = _Relay()
+        if on_done:
+            self._relay.done.connect(on_done, Qt.ConnectionType.QueuedConnection)
+        if on_error:
+            self._relay.error.connect(on_error, Qt.ConnectionType.QueuedConnection)
 
     @Slot()
     def run(self) -> None:
         try:
             result = self._fn()
-            if self._on_done:
-                # Schedule callback on main thread via a zero-delay timer trick
-                # QTimer.singleShot is thread-safe in Qt.
-                QTimer.singleShot(0, lambda: self._on_done(result))
+            self._relay.done.emit(result)
         except Exception as exc:
             logger.exception("Background task failed: %s", exc)
-            if self._on_error:
-                msg = str(exc)
-                QTimer.singleShot(0, lambda: self._on_error(msg))
+            self._relay.error.emit(str(exc))
 
 
 class MainWindow(QMainWindow):
@@ -214,21 +218,24 @@ class MainWindow(QMainWindow):
         self.setup_page.set_status("Connecting...", ok=False)
 
         def task():
-            return self._client.ping()
+            # Raises on failure so the error message reaches on_error
+            self._client._get("/health", timeout=3.0)
+            return True
 
-        def done(ok: bool):
-            self._pi_ok = ok
-            if ok:
-                self.setup_page.set_status(f"Connected: {url}", ok=True)
-                self._pi_status_lbl.setText("Pi: connected")
-                self._pi_status_lbl.setStyleSheet("color: #4ade80; margin-right: 12px;")
-                self._poll_calibration()
-            else:
-                self.setup_page.set_status("Could not reach Pi server", ok=False)
-                self._pi_status_lbl.setText("Pi: disconnected")
-                self._pi_status_lbl.setStyleSheet("color: #f87171; margin-right: 12px;")
+        def done(_):
+            self._pi_ok = True
+            self.setup_page.set_status(f"Connected: {url}", ok=True)
+            self._pi_status_lbl.setText("Pi: connected")
+            self._pi_status_lbl.setStyleSheet("color: #4ade80; margin-right: 12px;")
+            self._poll_calibration()
 
-        self._run(task, done)
+        def err(msg: str):
+            self._pi_ok = False
+            self.setup_page.set_status(f"Failed: {msg}", ok=False)
+            self._pi_status_lbl.setText("Pi: disconnected")
+            self._pi_status_lbl.setStyleSheet("color: #f87171; margin-right: 12px;")
+
+        self._run(task, done, err)
 
     # ── calibration polling ───────────────────────────────────────────────────
 
