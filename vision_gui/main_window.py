@@ -148,7 +148,7 @@ class MainWindow(QMainWindow):
         self.setStatusBar(QStatusBar())
 
         self.setup_page.set_url(self._settings.get("piUrl", ""))
-        self.setup_page.set_stream_url(self._settings.get("streamUrl", ""))
+        self.setup_page.set_stream_url(str(self._settings.get("streamUrl", "")))
         self._go_to("setup")
 
     def _connect_signals(self) -> None:
@@ -174,7 +174,7 @@ class MainWindow(QMainWindow):
         if isinstance(source, str) and not source.strip():
             self.statusBar().showMessage("Enter a stream URL or local camera index.", 3000)
             return
-        self._settings["streamUrl"] = str(source) if isinstance(source, str) else source
+        self._settings["streamUrl"] = str(source)
         _save_settings(self._settings)
         self._camera.set_source(source)
         self.statusBar().showMessage(f"Opening camera: {source}", 3000)
