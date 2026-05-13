@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 
 class SetupPage(QWidget):
     connect_requested = Signal(str)   # pi_url
-    stream_requested = Signal(str)    # camera stream url or ""
+    stream_requested = Signal(object)  # str (URL) or int (local camera index)
 
     def __init__(self) -> None:
         super().__init__()
@@ -65,7 +65,7 @@ class SetupPage(QWidget):
         self._local_index.setRange(0, 9)
         self._local_index.setFixedWidth(70)
         local_btn = QPushButton("Use Local Camera")
-        local_btn.clicked.connect(lambda: self.stream_requested.emit(""))
+        local_btn.clicked.connect(lambda: self.stream_requested.emit(self._local_index.value()))
         local_row.addWidget(self._local_index)
         local_row.addWidget(local_btn)
         local_row.addStretch()
