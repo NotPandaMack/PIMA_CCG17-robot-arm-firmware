@@ -8,7 +8,6 @@ from typing import Any
 import numpy as np
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, Signal, Slot
 from PySide6.QtWidgets import (
-    QHBoxLayout,
     QLabel,
     QMainWindow,
     QPushButton,
@@ -16,11 +15,10 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QStatusBar,
     QToolBar,
-    QVBoxLayout,
     QWidget,
 )
 
-from .camera_thread import CameraThread
+from .camera_feed import CameraFeed
 from .client import PiClient
 from .detect import HsvRange, detect_object, draw_overlay, pixel_to_robot
 from .pages.calibrate import CalibratePage
@@ -45,15 +43,14 @@ def _save_settings(s: dict[str, Any]) -> None:
     _SETTINGS_PATH.write_text(json.dumps(s, indent=2))
 
 
+# ── thread-safe background tasks ─────────────────────────────────────────────
+
 class _Relay(QObject):
-    """Carries results from worker threads back to the main thread via Qt signals."""
     done = Signal(object)
     error = Signal(str)
 
 
 class _Task(QRunnable):
-    """Fire-and-forget background task. Uses Qt signals for thread-safe UI callbacks."""
-
     def __init__(self, fn, on_done=None, on_error=None) -> None:
         super().__init__()
         self._fn = fn
@@ -66,12 +63,13 @@ class _Task(QRunnable):
     @Slot()
     def run(self) -> None:
         try:
-            result = self._fn()
-            self._relay.done.emit(result)
+            self._relay.done.emit(self._fn())
         except Exception as exc:
             logger.error("Background task failed: %s", exc)
             self._relay.error.emit(str(exc))
 
+
+# ── main window ───────────────────────────────────────────────────────────────
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
@@ -87,29 +85,30 @@ class MainWindow(QMainWindow):
         self._homography: list[list[float]] | None = None
         self._hsv = HsvRange()
         self._last_frame: np.ndarray | None = None
-        self._camera_thread: CameraThread | None = None
+
+        # Camera runs on the main thread via QTimer (avoids OpenCV/Qt thread segfault)
+        self._camera = CameraFeed()
+        self._camera.frame_ready.connect(self._on_frame)
+        self._camera.error.connect(self._on_camera_error)
 
         self._build_ui()
         self._connect_signals()
 
-        # Polling timers — only do anything when _pi_ok is True
+        # Polling — only fires when _pi_ok is True
         self._cal_timer = QTimer(self)
         self._cal_timer.setInterval(5000)
         self._cal_timer.timeout.connect(self._poll_calibration)
         self._cal_timer.start()
 
         self._esp_timer = QTimer(self)
-        self._esp_timer.setInterval(800)
+        self._esp_timer.setInterval(1000)
         self._esp_timer.timeout.connect(self._poll_esp)
         self._esp_timer.start()
 
-        # Start camera after the event loop is running, not during __init__
-        QTimer.singleShot(0, self._start_camera)
-
-    # ── UI construction ───────────────────────────────────────────────────────
+    # ── UI ────────────────────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
-        toolbar = QToolBar("Navigation")
+        toolbar = QToolBar()
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
 
@@ -140,20 +139,22 @@ class MainWindow(QMainWindow):
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         toolbar.addWidget(spacer)
 
-        self._pi_status_lbl = QLabel("Pi: disconnected")
-        self._pi_status_lbl.setStyleSheet("color: #f87171; margin-right: 12px;")
-        toolbar.addWidget(self._pi_status_lbl)
+        self._pi_pill = QLabel("Pi: disconnected")
+        self._pi_pill.setStyleSheet("color: #f87171; margin-right: 12px;")
+        toolbar.addWidget(self._pi_pill)
 
         self.setCentralWidget(self._stack)
         self.setStatusBar(QStatusBar())
 
         self.setup_page.set_url(self._settings.get("piUrl", ""))
+        self.setup_page.set_stream_url(self._settings.get("streamUrl", ""))
         self._go_to("setup")
 
     def _connect_signals(self) -> None:
         self.setup_page.connect_requested.connect(self._on_connect)
+        self.setup_page.stream_requested.connect(self._on_stream_connect)
         self.camera_page.hsv_changed.connect(self._on_hsv_changed)
-        self.camera_page.camera_index_changed.connect(self._restart_camera)
+        self.camera_page.camera_index_changed.connect(self._on_local_camera)
         self.calibrate_page.save_homography_requested.connect(self._save_homography)
         self.calibrate_page.save_pitch_requested.connect(self._save_pitch)
         self.pick_page.hover_requested.connect(lambda: self._do_pick(hover_only=True))
@@ -169,26 +170,20 @@ class MainWindow(QMainWindow):
 
     # ── camera ────────────────────────────────────────────────────────────────
 
-    def _start_camera(self) -> None:
-        idx = self._settings.get("cameraIndex", 0)
-        self._camera_thread = CameraThread(idx)
-        self._camera_thread.frame_ready.connect(self._on_frame)
-        self._camera_thread.error.connect(
-            lambda e: self.statusBar().showMessage(f"Camera: {e}", 5000)
-        )
-        self._camera_thread.start()
-
-    def _restart_camera(self, index: int) -> None:
+    def _on_local_camera(self, index: int) -> None:
         self._settings["cameraIndex"] = index
         _save_settings(self._settings)
-        if self._camera_thread:
-            self._camera_thread.stop()
-        self._camera_thread = CameraThread(index)
-        self._camera_thread.frame_ready.connect(self._on_frame)
-        self._camera_thread.error.connect(
-            lambda e: self.statusBar().showMessage(f"Camera: {e}", 5000)
-        )
-        self._camera_thread.start()
+        self._camera.set_source(index)
+
+    def _on_stream_connect(self, url: str) -> None:
+        self._settings["streamUrl"] = url
+        _save_settings(self._settings)
+        self._camera.set_source(url)
+        self.statusBar().showMessage(f"Connecting to stream: {url}", 3000)
+
+    def _on_camera_error(self, msg: str) -> None:
+        self.statusBar().showMessage(f"Camera: {msg}", 6000)
+        logger.warning("Camera error: %s", msg)
 
     @Slot(object)
     def _on_frame(self, frame: np.ndarray) -> None:
@@ -200,8 +195,7 @@ class MainWindow(QMainWindow):
 
         current = self._stack.currentWidget()
         if current is self.camera_page:
-            annotated = draw_overlay(frame, det, robot_xy)
-            self.camera_page.update_frame(annotated)
+            self.camera_page.update_frame(draw_overlay(frame, det, robot_xy))
             if det.found:
                 xy = f"({robot_xy[0]:.1f}, {robot_xy[1]:.1f})" if robot_xy else "pixels only"
                 self.camera_page.set_detection_label(f"Object at {xy} — conf={det.confidence:.2f}")
@@ -212,7 +206,7 @@ class MainWindow(QMainWindow):
         elif current is self.pick_page:
             self.pick_page.update_frame(frame, det, robot_xy)
 
-    # ── connection ────────────────────────────────────────────────────────────
+    # ── Pi connection ─────────────────────────────────────────────────────────
 
     def _on_connect(self, url: str) -> None:
         self._client.set_url(url)
@@ -221,23 +215,21 @@ class MainWindow(QMainWindow):
         self.setup_page.set_status("Connecting...", ok=False)
 
         def task():
-            import requests
-            r = requests.get(f"{url.rstrip('/')}/health", timeout=4.0)
+            import requests as _req
+            r = _req.get(f"{url.rstrip('/')}/health", timeout=4.0)
             r.raise_for_status()
             return True
 
         def done(_):
             self._pi_ok = True
             self.setup_page.set_status(f"Connected: {url}", ok=True)
-            self._pi_status_lbl.setText("Pi: connected")
-            self._pi_status_lbl.setStyleSheet("color: #4ade80; margin-right: 12px;")
+            self._pi_pill.setText("Pi: connected")
+            self._pi_pill.setStyleSheet("color: #4ade80; margin-right: 12px;")
             self._poll_calibration()
 
         def err(msg: str):
             self._pi_ok = False
             self.setup_page.set_status(f"Failed: {msg}", ok=False)
-            self._pi_status_lbl.setText("Pi: disconnected")
-            self._pi_status_lbl.setStyleSheet("color: #f87171; margin-right: 12px;")
 
         self._run(task, done, err)
 
@@ -248,15 +240,12 @@ class MainWindow(QMainWindow):
             return
 
         def task():
-            cal = self._client.get_calibration()
-            cfg = self._client.get_config()
-            return cal, cfg
+            return self._client.get_calibration(), self._client.get_config()
 
         def done(result):
             cal, cfg = result
             self._calibration = cal
             self._motion_enabled = bool(cfg.get("motionEnabled", False))
-
             hom = cal.get("homography")
             if isinstance(hom, list) and len(hom) == 3 and isinstance(hom[0], list):
                 self._homography = hom
@@ -264,7 +253,6 @@ class MainWindow(QMainWindow):
                 self._homography = [hom[i * 3:(i + 1) * 3] for i in range(3)]
             else:
                 self._homography = None
-
             self.calibrate_page.update_calibration_summary(cal)
             calibrated = (
                 self._homography is not None
@@ -276,10 +264,7 @@ class MainWindow(QMainWindow):
                 motion_enabled=self._motion_enabled,
             )
 
-        def err(msg: str):
-            logger.warning("Calibration poll failed: %s", msg)
-
-        self._run(task, done, err)
+        self._run(task, done, lambda e: logger.warning("Cal poll failed: %s", e))
 
     # ── ESP polling ───────────────────────────────────────────────────────────
 
@@ -290,9 +275,9 @@ class MainWindow(QMainWindow):
         def task():
             return self._client.esp_status()
 
-        def done(status: dict):
-            self._esp_status = status
-            self.calibrate_page.update_esp_status(status)
+        def done(s: dict):
+            self._esp_status = s
+            self.calibrate_page.update_esp_status(s)
 
         self._run(task, done)
 
@@ -303,7 +288,7 @@ class MainWindow(QMainWindow):
         self._settings["hsv"] = hsv.to_dict()
         _save_settings(self._settings)
 
-    # ── calibration saves ─────────────────────────────────────────────────────
+    # ── saves ─────────────────────────────────────────────────────────────────
 
     def _save_homography(self, homography: list, points: list) -> None:
         def task():
@@ -314,11 +299,9 @@ class MainWindow(QMainWindow):
             self._homography = homography
             self.statusBar().showMessage("Homography saved.", 3000)
 
-        def err(msg: str):
-            self.calibrate_page.set_homography_saved(False)
-            self.statusBar().showMessage(f"Homography save failed: {msg}", 5000)
-
-        self._run(task, done, err)
+        self._run(task, done,
+                  lambda e: (self.calibrate_page.set_homography_saved(False),
+                              self.statusBar().showMessage(f"Homography save failed: {e}", 5000)))
 
     def _save_pitch(self, pitch: float) -> None:
         def task():
@@ -328,30 +311,25 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Pitch {pitch:.1f}° saved.", 3000)
             self._poll_calibration()
 
-        def err(msg: str):
-            self.statusBar().showMessage(f"Pitch save failed: {msg}", 5000)
-
-        self._run(task, done, err)
+        self._run(task, done,
+                  lambda e: self.statusBar().showMessage(f"Pitch save failed: {e}", 5000))
 
     # ── pick / hover ──────────────────────────────────────────────────────────
 
     def _do_pick(self, hover_only: bool) -> None:
         if self._last_frame is None:
-            self.pick_page.set_pick_status("No camera frame available.")
+            self.pick_page.set_pick_status("No camera frame — check camera source.")
             return
-
         det = detect_object(self._last_frame, self._hsv)
         if not det.found or not self._homography:
-            self.pick_page.set_pick_status("No object detected — cannot pick.")
+            self.pick_page.set_pick_status("No object detected in current frame.")
             return
-
         robot_xy = pixel_to_robot(det.pixel_x, det.pixel_y, self._homography)
         if robot_xy is None:
             self.pick_page.set_pick_status("Pixel→robot transform failed.")
             return
 
         self.pick_page.set_pick_status("Sending hover..." if hover_only else "Sending pick...")
-
         from datetime import UTC, datetime
         target = {
             "type": "object_detected",
@@ -371,19 +349,15 @@ class MainWindow(QMainWindow):
         def done(plan: dict):
             self.pick_page.update_plan(plan)
             if not plan.get("ok"):
-                errors = "; ".join(plan.get("errors", ["unknown error"]))
-                self.pick_page.set_pick_status(f"Blocked: {errors}")
+                self.pick_page.set_pick_status("Blocked: " + "; ".join(plan.get("errors", [])))
             elif plan.get("sent"):
-                self.pick_page.set_pick_status("Hovering..." if hover_only else "Picking...")
+                self.pick_page.set_pick_status("Hovering..." if hover_only else "Picking!")
             else:
                 self.pick_page.set_pick_status("Plan OK — motion disabled on Pi.")
 
-        def err(msg: str):
-            self.pick_page.set_pick_status(f"Error: {msg}")
+        self._run(task, done, lambda e: self.pick_page.set_pick_status(f"Error: {e}"))
 
-        self._run(task, done, err)
-
-    # ── motion enable ─────────────────────────────────────────────────────────
+    # ── motion ────────────────────────────────────────────────────────────────
 
     def _set_motion_enabled(self, enabled: bool) -> None:
         def task():
@@ -392,26 +366,22 @@ class MainWindow(QMainWindow):
         def done(_):
             self._motion_enabled = enabled
             self.statusBar().showMessage(
-                f"Motion {'enabled' if enabled else 'disabled'}.", 2000
-            )
+                f"Motion {'ENABLED' if enabled else 'disabled'}.", 3000)
             self._poll_calibration()
 
-        def err(msg: str):
-            self.statusBar().showMessage(f"Motion toggle failed: {msg}", 5000)
+        self._run(task, done,
+                  lambda e: self.statusBar().showMessage(f"Motion toggle failed: {e}", 5000))
 
-        self._run(task, done, err)
-
-    # ── background task runner ────────────────────────────────────────────────
+    # ── runner ────────────────────────────────────────────────────────────────
 
     def _run(self, fn, on_done=None, on_error=None) -> None:
-        task = _Task(fn, on_done, on_error)
-        task.setAutoDelete(True)
-        QThreadPool.globalInstance().start(task)
+        t = _Task(fn, on_done, on_error)
+        t.setAutoDelete(True)
+        QThreadPool.globalInstance().start(t)
 
     # ── cleanup ───────────────────────────────────────────────────────────────
 
     def closeEvent(self, event) -> None:
-        if self._camera_thread:
-            self._camera_thread.stop()
+        self._camera.stop()
         _save_settings(self._settings)
         super().closeEvent(event)

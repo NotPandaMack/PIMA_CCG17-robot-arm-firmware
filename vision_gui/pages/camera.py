@@ -46,14 +46,6 @@ class CameraPage(QWidget):
         right = QVBoxLayout()
         right.setSpacing(12)
 
-        cam_group = QGroupBox("Camera Source")
-        cam_form = QFormLayout(cam_group)
-        self._cam_index = QSpinBox()
-        self._cam_index.setRange(0, 9)
-        self._cam_index.valueChanged.connect(self.camera_index_changed.emit)
-        cam_form.addRow("Index:", self._cam_index)
-        right.addWidget(cam_group)
-
         hsv_group = QGroupBox("HSV Detection Tuning")
         hsv_layout = QVBoxLayout(hsv_group)
 

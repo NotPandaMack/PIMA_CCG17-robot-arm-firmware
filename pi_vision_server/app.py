@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from .calibration import (
     DEFAULT_CALIBRATION_PATH,
@@ -73,6 +74,38 @@ app.add_middleware(
 @app.get("/health")
 def health() -> dict[str, Any]:
     return {"ok": True}
+
+
+@app.get("/vision/camera/stream")
+def camera_stream():
+    """MJPEG stream of the Pi's overhead webcam. Accessible on port 8000 with no auth."""
+    import cv2
+
+    def _generate():
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            return
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        try:
+            while True:
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n\r\n"
+                    + jpeg.tobytes()
+                    + b"\r\n"
+                )
+        finally:
+            cap.release()
+
+    return StreamingResponse(
+        _generate(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
 
 
 @app.get("/vision/config")
