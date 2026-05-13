@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import threading
 from pathlib import Path
 from typing import Any
@@ -44,19 +45,24 @@ def _save_settings(s: dict[str, Any]) -> None:
     _SETTINGS_PATH.write_text(json.dumps(s, indent=2))
 
 
+# Thread-safe queue — background threads post callables here;
+# the main thread drains it via a QTimer (see MainWindow._cb_timer).
+_cb_queue: queue.Queue = queue.Queue()
+
+
 def _run_bg(fn, on_done=None, on_error=None) -> None:
-    """Run fn() on a daemon thread. Deliver result/error to the Qt main thread
-    via QTimer.singleShot(0, ...) which is thread-safe in Qt 6."""
+    """Run fn() on a daemon thread. Deliver result/error on the main thread
+    via _cb_queue, which is drained by MainWindow's _cb_timer QTimer."""
     def worker():
         try:
             result = fn()
             if on_done:
-                QTimer.singleShot(0, lambda: on_done(result))
+                _cb_queue.put(lambda: on_done(result))
         except Exception as exc:
             logger.error("Background task failed: %s", exc)
             if on_error:
                 msg = str(exc)
-                QTimer.singleShot(0, lambda: on_error(msg))
+                _cb_queue.put(lambda: on_error(msg))
     threading.Thread(target=worker, daemon=True).start()
 
 
@@ -82,6 +88,12 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._connect_signals()
+
+        # Drain the background-thread callback queue on the main thread every 20 ms.
+        self._cb_timer = QTimer(self)
+        self._cb_timer.setInterval(20)
+        self._cb_timer.timeout.connect(self._drain_callbacks)
+        self._cb_timer.start()
 
         # Polling timers — guarded by _pi_ok, only fire network calls when connected
         self._cal_timer = QTimer(self)
@@ -359,6 +371,15 @@ class MainWindow(QMainWindow):
 
         _run_bg(task, done,
                 lambda e: self.statusBar().showMessage(f"Motion toggle failed: {e}", 5000))
+
+    # ── callback drain ────────────────────────────────────────────────────────
+
+    def _drain_callbacks(self) -> None:
+        while not _cb_queue.empty():
+            try:
+                _cb_queue.get_nowait()()
+            except Exception as exc:
+                logger.error("Callback error: %s", exc)
 
     # ── cleanup ───────────────────────────────────────────────────────────────
 
