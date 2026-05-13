@@ -69,7 +69,7 @@ class _Task(QRunnable):
             result = self._fn()
             self._relay.done.emit(result)
         except Exception as exc:
-            logger.exception("Background task failed: %s", exc)
+            logger.error("Background task failed: %s", exc)
             self._relay.error.emit(str(exc))
 
 
@@ -83,7 +83,7 @@ class MainWindow(QMainWindow):
         self._client = PiClient(self._settings.get("piUrl", ""))
         self._pi_ok = False
         self._calibration: dict[str, Any] = {}
-        self._esp_status: dict[str, Any] = {}
+        self._motion_enabled = False
         self._homography: list[list[float]] | None = None
         self._hsv = HsvRange()
         self._last_frame: np.ndarray | None = None
@@ -92,7 +92,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._connect_signals()
 
-        # ── polling timers ────────────────────────────────────────────────────
+        # Polling timers — only do anything when _pi_ok is True
         self._cal_timer = QTimer(self)
         self._cal_timer.setInterval(5000)
         self._cal_timer.timeout.connect(self._poll_calibration)
@@ -103,9 +103,8 @@ class MainWindow(QMainWindow):
         self._esp_timer.timeout.connect(self._poll_esp)
         self._esp_timer.start()
 
-        # initial load
-        QTimer.singleShot(200, self._poll_calibration)
-        QTimer.singleShot(400, self._start_camera)
+        # Start camera after the event loop is running, not during __init__
+        QTimer.singleShot(0, self._start_camera)
 
     # ── UI construction ───────────────────────────────────────────────────────
 
@@ -148,8 +147,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self._stack)
         self.setStatusBar(QStatusBar())
 
-        saved_url = self._settings.get("piUrl", "")
-        self.setup_page.set_url(saved_url)
+        self.setup_page.set_url(self._settings.get("piUrl", ""))
         self._go_to("setup")
 
     def _connect_signals(self) -> None:
@@ -175,7 +173,9 @@ class MainWindow(QMainWindow):
         idx = self._settings.get("cameraIndex", 0)
         self._camera_thread = CameraThread(idx)
         self._camera_thread.frame_ready.connect(self._on_frame)
-        self._camera_thread.error.connect(lambda e: self.statusBar().showMessage(f"Camera: {e}", 3000))
+        self._camera_thread.error.connect(
+            lambda e: self.statusBar().showMessage(f"Camera: {e}", 5000)
+        )
         self._camera_thread.start()
 
     def _restart_camera(self, index: int) -> None:
@@ -185,6 +185,9 @@ class MainWindow(QMainWindow):
             self._camera_thread.stop()
         self._camera_thread = CameraThread(index)
         self._camera_thread.frame_ready.connect(self._on_frame)
+        self._camera_thread.error.connect(
+            lambda e: self.statusBar().showMessage(f"Camera: {e}", 5000)
+        )
         self._camera_thread.start()
 
     @Slot(object)
@@ -218,8 +221,9 @@ class MainWindow(QMainWindow):
         self.setup_page.set_status("Connecting...", ok=False)
 
         def task():
-            # Raises on failure so the error message reaches on_error
-            self._client._get("/health", timeout=3.0)
+            import requests
+            r = requests.get(f"{url.rstrip('/')}/health", timeout=4.0)
+            r.raise_for_status()
             return True
 
         def done(_):
@@ -237,40 +241,45 @@ class MainWindow(QMainWindow):
 
         self._run(task, done, err)
 
-    # ── calibration polling ───────────────────────────────────────────────────
+    # ── calibration + config polling ──────────────────────────────────────────
 
     def _poll_calibration(self) -> None:
-        if not self._client.base_url:
+        if not self._pi_ok:
             return
 
         def task():
-            return self._client.get_calibration()
+            cal = self._client.get_calibration()
+            cfg = self._client.get_config()
+            return cal, cfg
 
-        def done(cal: dict):
+        def done(result):
+            cal, cfg = result
             self._calibration = cal
+            self._motion_enabled = bool(cfg.get("motionEnabled", False))
+
             hom = cal.get("homography")
             if isinstance(hom, list) and len(hom) == 3 and isinstance(hom[0], list):
                 self._homography = hom
             elif isinstance(hom, list) and len(hom) == 9:
-                self._homography = [hom[i*3:(i+1)*3] for i in range(3)]
+                self._homography = [hom[i * 3:(i + 1) * 3] for i in range(3)]
             else:
                 self._homography = None
 
             self.calibrate_page.update_calibration_summary(cal)
-            motion_enabled = False
-            try:
-                cfg = self._client.get_config()
-                motion_enabled = bool(cfg.get("motionEnabled", False))
-            except Exception:
-                pass
-            calibrated = self._homography is not None and isinstance(cal.get("pickupPitchDeg"), (int, float))
+            calibrated = (
+                self._homography is not None
+                and isinstance(cal.get("pickupPitchDeg"), (int, float))
+            )
             self.pick_page.set_button_state(
                 calibrated=calibrated,
                 pi_ok=self._pi_ok,
-                motion_enabled=motion_enabled,
+                motion_enabled=self._motion_enabled,
             )
 
-        self._run(task, done)
+        def err(msg: str):
+            logger.warning("Calibration poll failed: %s", msg)
+
+        self._run(task, done, err)
 
     # ── ESP polling ───────────────────────────────────────────────────────────
 
@@ -300,15 +309,14 @@ class MainWindow(QMainWindow):
         def task():
             return self._client.save_homography(homography, points)
 
-        def done(result: dict):
-            ok = "error" not in str(result).lower()
-            self.calibrate_page.set_homography_saved(ok)
-            self._homography = homography if ok else self._homography
-            self.statusBar().showMessage("Homography saved." if ok else "Homography save failed.", 3000)
+        def done(_):
+            self.calibrate_page.set_homography_saved(True)
+            self._homography = homography
+            self.statusBar().showMessage("Homography saved.", 3000)
 
         def err(msg: str):
             self.calibrate_page.set_homography_saved(False)
-            self.statusBar().showMessage(f"Save failed: {msg}", 4000)
+            self.statusBar().showMessage(f"Homography save failed: {msg}", 5000)
 
         self._run(task, done, err)
 
@@ -320,7 +328,10 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Pitch {pitch:.1f}° saved.", 3000)
             self._poll_calibration()
 
-        self._run(task, done)
+        def err(msg: str):
+            self.statusBar().showMessage(f"Pitch save failed: {msg}", 5000)
+
+        self._run(task, done, err)
 
     # ── pick / hover ──────────────────────────────────────────────────────────
 
@@ -339,8 +350,7 @@ class MainWindow(QMainWindow):
             self.pick_page.set_pick_status("Pixel→robot transform failed.")
             return
 
-        label = "Sending hover..." if hover_only else "Sending pick..."
-        self.pick_page.set_pick_status(label)
+        self.pick_page.set_pick_status("Sending hover..." if hover_only else "Sending pick...")
 
         from datetime import UTC, datetime
         target = {
@@ -380,10 +390,16 @@ class MainWindow(QMainWindow):
             return self._client.patch_config({"motionEnabled": enabled})
 
         def done(_):
-            self.statusBar().showMessage(f"Motion {'enabled' if enabled else 'disabled'}.", 2000)
+            self._motion_enabled = enabled
+            self.statusBar().showMessage(
+                f"Motion {'enabled' if enabled else 'disabled'}.", 2000
+            )
             self._poll_calibration()
 
-        self._run(task, done)
+        def err(msg: str):
+            self.statusBar().showMessage(f"Motion toggle failed: {msg}", 5000)
+
+        self._run(task, done, err)
 
     # ── background task runner ────────────────────────────────────────────────
 

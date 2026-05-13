@@ -78,7 +78,7 @@ class PiClient:
         _assert_bg()
         r = requests.get(f"{self.base_url}{path}", timeout=timeout)
         r.raise_for_status()
-        return r.json()
+        return r.json() if r.content else {}
 
     def _post(self, path: str, body: dict[str, Any], timeout: float = 1.0) -> dict[str, Any]:
         _assert_bg()
